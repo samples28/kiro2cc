@@ -557,13 +557,29 @@ func logMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// 计算处理时间
 		duration := time.Since(startTime)
 
-		// 记录指标
+		// 记录指标和分析
 		cached := wrappedWriter.Header().Get("X-Cache") == "HIT"
 		if r.URL.Path == "/v1/messages" {
-			metrics.RecordRequest(duration, cached, false)
-			if wrappedWriter.statusCode >= 400 {
-				metrics.RecordError()
+			if metrics != nil {
+				metrics.RecordRequest(duration, cached, false)
+				if wrappedWriter.statusCode >= 400 {
+					metrics.RecordError()
+				}
 			}
+
+			// 记录高级分析数据
+			userID := r.Header.Get("X-User-ID")
+			if userID == "" {
+				userID = r.RemoteAddr // 使用IP作为默认用户ID
+			}
+
+			// 估算请求大小
+			requestSize := int(r.ContentLength)
+			if requestSize <= 0 {
+				requestSize = 1000 // 默认大小
+			}
+
+			advancedAnalytics.RecordRequest(AnthropicRequest{}, userID, duration, cached, requestSize)
 		}
 
 		fmt.Printf("处理时间: %v, 状态码: %d, 路径: %s\n", duration, wrappedWriter.statusCode, r.URL.Path)
@@ -768,11 +784,61 @@ func startServer(port string) {
 		}
 
 		// 执行清理
-		contextCompressor.CleanupCache()
+		if contextCompressor != nil {
+			contextCompressor.CleanupCache()
+		}
+
+		// 清理速率限制器
+		rateLimiter.CleanupInactiveClients()
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"status": "cleanup completed",
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+	}))
+
+	// 添加高级分析端点
+	mux.HandleFunc("/analytics", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(advancedAnalytics.GetAnalytics())
+	}))
+
+	// 添加优化建议端点
+	mux.HandleFunc("/recommendations", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"recommendations": advancedAnalytics.GetRecommendations(),
+			"timestamp": time.Now().Unix(),
+		})
+	}))
+
+	// 添加速率限制统计端点
+	mux.HandleFunc("/rate-limit/stats", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(rateLimiter.GetStats())
+	}))
+
+	// 添加熔断器状态端点
+	mux.HandleFunc("/circuit-breaker/status", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"stats": circuitBreaker.GetStats(),
+			"health": circuitBreaker.GetHealthStatus(),
+		})
+	}))
+
+	// 添加熔断器重置端点
+	mux.HandleFunc("/circuit-breaker/reset", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "只支持POST请求", http.StatusMethodNotAllowed)
+			return
+		}
+
+		circuitBreaker.Reset()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "circuit breaker reset",
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
 	}))
@@ -786,12 +852,17 @@ func startServer(port string) {
 	// 启动服务器
 	fmt.Printf("启动Anthropic API代理服务器，监听端口: %s\n", port)
 	fmt.Printf("可用端点:\n")
-	fmt.Printf("  POST /v1/messages     - Anthropic API代理\n")
-	fmt.Printf("  GET  /health          - 健康检查\n")
-	fmt.Printf("  GET  /stats           - 基础统计信息\n")
-	fmt.Printf("  GET  /stats/detailed  - 详细统计信息\n")
-	fmt.Printf("  GET  /config          - 配置信息\n")
-	fmt.Printf("  POST /optimize/cleanup - 清理缓存\n")
+	fmt.Printf("  POST /v1/messages          - Anthropic API代理\n")
+	fmt.Printf("  GET  /health               - 健康检查\n")
+	fmt.Printf("  GET  /stats                - 基础统计信息\n")
+	fmt.Printf("  GET  /stats/detailed       - 详细统计信息\n")
+	fmt.Printf("  GET  /config               - 配置信息\n")
+	fmt.Printf("  POST /optimize/cleanup     - 清理缓存\n")
+	fmt.Printf("  GET  /analytics            - 高级分析报告\n")
+	fmt.Printf("  GET  /recommendations      - 优化建议\n")
+	fmt.Printf("  GET  /rate-limit/stats     - 速率限制统计\n")
+	fmt.Printf("  GET  /circuit-breaker/status - 熔断器状态\n")
+	fmt.Printf("  POST /circuit-breaker/reset  - 重置熔断器\n")
 	fmt.Printf("按Ctrl+C停止服务器\n")
 
 	if err := http.ListenAndServe(":"+port, mux); err != nil {

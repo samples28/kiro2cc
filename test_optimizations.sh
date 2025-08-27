@@ -207,6 +207,54 @@ echo
 echo "缓存层统计:"
 curl -s "$SERVER_URL/stats/detailed" | jq '.cache_layers' 2>/dev/null || echo "无法获取缓存统计"
 
+echo
+echo "=== 高级功能测试 ==="
+
+# 测试高级分析
+echo -n "高级分析: "
+if curl -s "$SERVER_URL/analytics" | jq . > /dev/null 2>&1; then
+    echo "✓ 可访问"
+else
+    echo "✗ 失败"
+fi
+
+# 测试优化建议
+echo -n "优化建议: "
+if curl -s "$SERVER_URL/recommendations" | jq . > /dev/null 2>&1; then
+    echo "✓ 可访问"
+else
+    echo "✗ 失败"
+fi
+
+# 测试速率限制统计
+echo -n "速率限制统计: "
+if curl -s "$SERVER_URL/rate-limit/stats" | jq . > /dev/null 2>&1; then
+    echo "✓ 可访问"
+else
+    echo "✗ 失败"
+fi
+
+# 测试熔断器状态
+echo -n "熔断器状态: "
+if curl -s "$SERVER_URL/circuit-breaker/status" | jq . > /dev/null 2>&1; then
+    echo "✓ 可访问"
+else
+    echo "✗ 失败"
+fi
+
+echo
+echo "高级分析报告:"
+curl -s "$SERVER_URL/analytics" | jq '{
+  active_users: .active_users,
+  total_users: .total_users,
+  uptime_hours: .uptime_hours,
+  cost_analysis: .cost_analysis
+}' 2>/dev/null || echo "无法获取分析报告"
+
+echo
+echo "优化建议:"
+curl -s "$SERVER_URL/recommendations" | jq '.recommendations[]' 2>/dev/null || echo "无法获取建议"
+
 # 清理测试
 echo
 echo "=== 清理测试 ==="
