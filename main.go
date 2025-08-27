@@ -560,9 +560,11 @@ func logMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// 记录指标
 		cached := wrappedWriter.Header().Get("X-Cache") == "HIT"
 		if r.URL.Path == "/v1/messages" {
-			metrics.RecordRequest(duration, cached, false)
-			if wrappedWriter.statusCode >= 400 {
-				metrics.RecordError()
+			if metrics != nil {
+				metrics.RecordRequest(duration, cached, false)
+				if wrappedWriter.statusCode >= 400 {
+					metrics.RecordError()
+				}
 			}
 		}
 
@@ -595,8 +597,22 @@ func startServer(port string) {
 			return
 		}
 
-		// 获取当前token (使用优化的token管理器)
-		token, err := tokenManager.GetToken()
+		// 获取当前token (使用优化的token管理器或回退到原始方法)
+		var token *TokenData
+		var err error
+
+		if tokenManager != nil {
+			token, err = tokenManager.GetToken()
+		} else {
+			// 回退到原始的getToken方法
+			tokenData, getErr := getToken()
+			if getErr != nil {
+				err = getErr
+			} else {
+				token = &tokenData
+			}
+		}
+
 		if err != nil {
 			fmt.Printf("错误: 获取token失败: %v\n", err)
 			http.Error(w, fmt.Sprintf("获取token失败: %v", err), http.StatusInternalServerError)
@@ -647,67 +663,95 @@ func startServer(port string) {
 			return
 		}
 
-		// 非流式请求处理 - 多层优化
+		// 非流式请求处理 - 多层优化（带回退机制）
 		startTime := time.Now()
 
-		// 1. 上下文压缩
-		compressedReq := contextCompressor.CompressRequest(anthropicReq)
-
-		// 2. 预测性缓存检查
-		if cachedResponse, found, confidence := predictiveCache.Get(compressedReq); found {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Cache", "PREDICTIVE-HIT")
-			w.Header().Set("X-Cache-Confidence", fmt.Sprintf("%.2f", confidence))
-			json.NewEncoder(w).Encode(cachedResponse)
-			metrics.RecordRequest(time.Since(startTime), true, false)
-			return
+		// 1. 上下文压缩（如果可用）
+		compressedReq := anthropicReq
+		if contextCompressor != nil {
+			compressedReq = contextCompressor.CompressRequest(anthropicReq)
 		}
 
-		// 3. 传统缓存检查
-		if cachedResponse, found := responseCache.Get(compressedReq); found {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("X-Cache", "HIT")
-			json.NewEncoder(w).Encode(cachedResponse)
-			metrics.RecordRequest(time.Since(startTime), true, false)
-			return
-		}
-
-		// 4. 请求去重处理
-		dedupeResponseCh := requestDeduplicator.ProcessRequest(compressedReq)
-
-		// 等待去重响应
-		select {
-		case dedupeResp := <-dedupeResponseCh:
-			if dedupeResp.Error != nil {
-				http.Error(w, dedupeResp.Error.Error(), http.StatusInternalServerError)
-				metrics.RecordError()
+		// 2. 预测性缓存检查（如果可用）
+		if predictiveCache != nil {
+			if cachedResponse, found, confidence := predictiveCache.Get(compressedReq); found {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Cache", "PREDICTIVE-HIT")
+				w.Header().Set("X-Cache-Confidence", fmt.Sprintf("%.2f", confidence))
+				json.NewEncoder(w).Encode(cachedResponse)
+				if metrics != nil {
+					metrics.RecordRequest(time.Since(startTime), true, false)
+				}
 				return
 			}
-
-			// 设置响应头
-			w.Header().Set("Content-Type", "application/json")
-			if dedupeResp.FromCache {
-				w.Header().Set("X-Cache", "DEDUPE-HIT")
-			} else {
-				w.Header().Set("X-Cache", "MISS")
-			}
-			if dedupeResp.Merged {
-				w.Header().Set("X-Merged", "true")
-			}
-
-			// 缓存响应
-			if !dedupeResp.FromCache {
-				responseCache.Set(compressedReq, dedupeResp.Response)
-				predictiveCache.Set(compressedReq, dedupeResp.Response)
-			}
-
-			w.Write(dedupeResp.Response.([]byte))
-			metrics.RecordRequest(time.Since(startTime), dedupeResp.FromCache, dedupeResp.Merged)
-
-		case <-time.After(45 * time.Second): // 增加超时时间以适应去重处理
-			http.Error(w, "请求超时", http.StatusRequestTimeout)
-			metrics.RecordError()
 		}
+
+		// 3. 传统缓存检查（如果可用）
+		if responseCache != nil {
+			if cachedResponse, found := responseCache.Get(compressedReq); found {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Cache", "HIT")
+				json.NewEncoder(w).Encode(cachedResponse)
+				if metrics != nil {
+					metrics.RecordRequest(time.Since(startTime), true, false)
+				}
+				return
+			}
+		}
+
+		// 4. 请求去重处理（如果可用）
+		if requestDeduplicator != nil {
+			dedupeResponseCh := requestDeduplicator.ProcessRequest(compressedReq)
+
+			// 等待去重响应
+			select {
+			case dedupeResp := <-dedupeResponseCh:
+				if dedupeResp.Error != nil {
+					http.Error(w, dedupeResp.Error.Error(), http.StatusInternalServerError)
+					if metrics != nil {
+						metrics.RecordError()
+					}
+					return
+				}
+
+				// 设置响应头
+				w.Header().Set("Content-Type", "application/json")
+				if dedupeResp.FromCache {
+					w.Header().Set("X-Cache", "DEDUPE-HIT")
+				} else {
+					w.Header().Set("X-Cache", "MISS")
+				}
+				if dedupeResp.Merged {
+					w.Header().Set("X-Merged", "true")
+				}
+
+				// 缓存响应
+				if !dedupeResp.FromCache {
+					if responseCache != nil {
+						responseCache.Set(compressedReq, dedupeResp.Response)
+					}
+					if predictiveCache != nil {
+						predictiveCache.Set(compressedReq, dedupeResp.Response)
+					}
+				}
+
+				w.Write(dedupeResp.Response.([]byte))
+				if metrics != nil {
+					metrics.RecordRequest(time.Since(startTime), dedupeResp.FromCache, dedupeResp.Merged)
+				}
+				return
+
+			case <-time.After(45 * time.Second):
+				http.Error(w, "请求超时", http.StatusRequestTimeout)
+				if metrics != nil {
+					metrics.RecordError()
+				}
+				return
+			}
+		}
+
+		// 5. 回退到原始处理方式
+		handleNonStreamRequest(w, compressedReq, token.AccessToken)
 	}))
 
 	// 添加健康检查端点
@@ -719,13 +763,25 @@ func startServer(port string) {
 	// 添加统计信息端点
 	mux.HandleFunc("/stats", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		stats := map[string]interface{}{
-			"basic_cache":      responseCache.GetStats(),
-			"predictive_cache": predictiveCache.GetStats(),
-			"context_compressor": contextCompressor.GetStats(),
-			"request_deduplicator": requestDeduplicator.GetStats(),
-			"metrics":          metrics.GetStats(),
-			"timestamp":        time.Now().Unix(),
+			"timestamp": time.Now().Unix(),
 		}
+
+		if responseCache != nil {
+			stats["basic_cache"] = responseCache.GetStats()
+		}
+		if predictiveCache != nil {
+			stats["predictive_cache"] = predictiveCache.GetStats()
+		}
+		if contextCompressor != nil {
+			stats["context_compressor"] = contextCompressor.GetStats()
+		}
+		if requestDeduplicator != nil {
+			stats["request_deduplicator"] = requestDeduplicator.GetStats()
+		}
+		if metrics != nil {
+			stats["metrics"] = metrics.GetStats()
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(stats)
 	}))
@@ -739,17 +795,31 @@ func startServer(port string) {
 				"cache_efficiency": calculateCacheEfficiency(),
 				"compression_effectiveness": calculateCompressionEffectiveness(),
 			},
-			"cache_layers": map[string]interface{}{
-				"predictive_cache": predictiveCache.GetStats(),
-				"basic_cache":      responseCache.GetStats(),
-				"dedupe_cache":     requestDeduplicator.GetStats(),
-			},
-			"optimizations": map[string]interface{}{
-				"context_compression": contextCompressor.GetStats(),
-				"request_batching":    requestBatcher.GetStats(),
-			},
-			"performance": metrics.GetStats(),
+			"cache_layers": map[string]interface{}{},
+			"optimizations": map[string]interface{}{},
+			"performance": map[string]interface{}{},
 		}
+
+		// 安全地添加各组件统计
+		if predictiveCache != nil {
+			detailedStats["cache_layers"].(map[string]interface{})["predictive_cache"] = predictiveCache.GetStats()
+		}
+		if responseCache != nil {
+			detailedStats["cache_layers"].(map[string]interface{})["basic_cache"] = responseCache.GetStats()
+		}
+		if requestDeduplicator != nil {
+			detailedStats["cache_layers"].(map[string]interface{})["dedupe_cache"] = requestDeduplicator.GetStats()
+		}
+		if contextCompressor != nil {
+			detailedStats["optimizations"].(map[string]interface{})["context_compression"] = contextCompressor.GetStats()
+		}
+		if requestBatcher != nil {
+			detailedStats["optimizations"].(map[string]interface{})["request_batching"] = requestBatcher.GetStats()
+		}
+		if metrics != nil {
+			detailedStats["performance"] = metrics.GetStats()
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(detailedStats)
 	}))
@@ -768,7 +838,9 @@ func startServer(port string) {
 		}
 
 		// 执行清理
-		contextCompressor.CleanupCache()
+		if contextCompressor != nil {
+			contextCompressor.CleanupCache()
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
@@ -802,23 +874,35 @@ func startServer(port string) {
 
 // calculateAPISavings 计算API调用节省数量
 func calculateAPISavings() map[string]interface{} {
-	metricsStats := metrics.GetStats()
-	cacheStats := responseCache.GetStats()
-	predictiveStats := predictiveCache.GetStats()
-	dedupeStats := requestDeduplicator.GetStats()
+	if metrics == nil {
+		return map[string]interface{}{
+			"total_api_calls_saved": 0,
+			"cache_savings":         0,
+			"predictive_savings":    0,
+			"dedupe_savings":        0,
+			"savings_rate_percent":  0.0,
+		}
+	}
 
+	metricsStats := metrics.GetStats()
 	totalRequests := metricsStats["total_requests"].(int64)
 	cachedRequests := metricsStats["cached_requests"].(int64)
 
 	// 估算节省的API调用
 	predictiveSavings := int64(0)
-	if predictiveEntries, ok := predictiveStats["prefetch_entries"].(int); ok {
-		predictiveSavings = int64(predictiveEntries)
+	if predictiveCache != nil {
+		predictiveStats := predictiveCache.GetStats()
+		if predictiveEntries, ok := predictiveStats["prefetch_entries"].(int); ok {
+			predictiveSavings = int64(predictiveEntries)
+		}
 	}
 
 	dedupeSavings := int64(0)
-	if totalMerges, ok := dedupeStats["total_merges"].(int64); ok {
-		dedupeSavings = totalMerges
+	if requestDeduplicator != nil {
+		dedupeStats := requestDeduplicator.GetStats()
+		if totalMerges, ok := dedupeStats["total_merges"].(int64); ok {
+			dedupeSavings = totalMerges
+		}
 	}
 
 	totalSavings := cachedRequests + predictiveSavings + dedupeSavings
@@ -838,8 +922,16 @@ func calculateAPISavings() map[string]interface{} {
 
 // calculateResponseTimeImprovement 计算响应时间改进
 func calculateResponseTimeImprovement() map[string]interface{} {
-	metricsStats := metrics.GetStats()
+	if metrics == nil {
+		return map[string]interface{}{
+			"current_avg_response_time_ms": 0,
+			"estimated_without_cache_ms":   0,
+			"improvement_ms":               0,
+			"improvement_percent":          0.0,
+		}
+	}
 
+	metricsStats := metrics.GetStats()
 	avgResponseTime := metricsStats["avg_response_time_ms"].(int64)
 	cacheHitRate := metricsStats["cache_hit_rate"].(float64)
 
@@ -867,30 +959,50 @@ func calculateResponseTimeImprovement() map[string]interface{} {
 
 // calculateCacheEfficiency 计算缓存效率
 func calculateCacheEfficiency() map[string]interface{} {
-	basicStats := responseCache.GetStats()
-	predictiveStats := predictiveCache.GetStats()
-	metricsStats := metrics.GetStats()
-
-	cacheHitRate := metricsStats["cache_hit_rate"].(float64)
-
-	return map[string]interface{}{
-		"overall_cache_hit_rate": cacheHitRate,
-		"basic_cache_size":       basicStats["cache_size"],
-		"predictive_cache_size":  predictiveStats["total_cache_entries"],
-		"learned_patterns":       predictiveStats["learned_patterns"],
+	result := map[string]interface{}{
+		"overall_cache_hit_rate": 0.0,
+		"basic_cache_size":       0,
+		"predictive_cache_size":  0,
+		"learned_patterns":       0,
 	}
+
+	if metrics != nil {
+		metricsStats := metrics.GetStats()
+		result["overall_cache_hit_rate"] = metricsStats["cache_hit_rate"]
+	}
+
+	if responseCache != nil {
+		basicStats := responseCache.GetStats()
+		result["basic_cache_size"] = basicStats["cache_size"]
+	}
+
+	if predictiveCache != nil {
+		predictiveStats := predictiveCache.GetStats()
+		result["predictive_cache_size"] = predictiveStats["total_cache_entries"]
+		result["learned_patterns"] = predictiveStats["learned_patterns"]
+	}
+
+	return result
 }
 
 // calculateCompressionEffectiveness 计算压缩效果
 func calculateCompressionEffectiveness() map[string]interface{} {
-	compressionStats := contextCompressor.GetStats()
-
-	return map[string]interface{}{
-		"compression_cache_size":   compressionStats["compression_cache_size"],
-		"total_compressions":       compressionStats["total_compressions"],
-		"avg_compression_ratio":    compressionStats["avg_compression_ratio"],
-		"summary_cache_size":       compressionStats["summary_cache_size"],
+	result := map[string]interface{}{
+		"compression_cache_size": 0,
+		"total_compressions":     0,
+		"avg_compression_ratio":  0.0,
+		"summary_cache_size":     0,
 	}
+
+	if contextCompressor != nil {
+		compressionStats := contextCompressor.GetStats()
+		result["compression_cache_size"] = compressionStats["compression_cache_size"]
+		result["total_compressions"] = compressionStats["total_compressions"]
+		result["avg_compression_ratio"] = compressionStats["avg_compression_ratio"]
+		result["summary_cache_size"] = compressionStats["summary_cache_size"]
+	}
+
+	return result
 }
 
 // handleStreamRequest 处理流式请求
@@ -937,8 +1049,13 @@ func handleStreamRequest(w http.ResponseWriter, anthropicReq AnthropicRequest, a
 	proxyReq.Header.Set("Content-Type", "application/json")
 	proxyReq.Header.Set("Accept", "text/event-stream")
 
-	// 发送请求 (使用优化的HTTP客户端)
-	client := httpClientManager.GetStreamingClient()
+	// 发送请求 (使用优化的HTTP客户端或默认客户端)
+	var client *http.Client
+	if httpClientManager != nil {
+		client = httpClientManager.GetStreamingClient()
+	} else {
+		client = &http.Client{}
+	}
 
 	resp, err := client.Do(proxyReq)
 	if err != nil {
@@ -954,8 +1071,13 @@ func handleStreamRequest(w http.ResponseWriter, anthropicReq AnthropicRequest, a
 
 		if resp.StatusCode == 403 {
 			// 异步刷新token，不阻塞当前请求
-			go tokenManager.refreshTokenAsync()
-			sendErrorEvent(w, flusher, "error", fmt.Errorf("CodeWhisperer Token 已过期，已异步刷新，请重试"))
+			if tokenManager != nil {
+				go tokenManager.refreshTokenAsync()
+				sendErrorEvent(w, flusher, "error", fmt.Errorf("CodeWhisperer Token 已过期，已异步刷新，请重试"))
+			} else {
+				refreshToken()
+				sendErrorEvent(w, flusher, "error", fmt.Errorf("CodeWhisperer Token 已刷新，请重试"))
+			}
 		} else {
 			sendErrorEvent(w, flusher, "error", fmt.Errorf("CodeWhisperer Error: %s ", string(body)))
 		}
@@ -1072,8 +1194,13 @@ func handleNonStreamRequest(w http.ResponseWriter, anthropicReq AnthropicRequest
 	proxyReq.Header.Set("Authorization", "Bearer "+accessToken)
 	proxyReq.Header.Set("Content-Type", "application/json")
 
-	// 发送请求
-	client := &http.Client{}
+	// 发送请求 (使用优化的HTTP客户端或默认客户端)
+	var client *http.Client
+	if httpClientManager != nil {
+		client = httpClientManager.GetClient()
+	} else {
+		client = &http.Client{}
+	}
 
 	resp, err := client.Do(proxyReq)
 	if err != nil {

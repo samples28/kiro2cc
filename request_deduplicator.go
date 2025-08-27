@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"time"
 )
+
+
 
 // RequestDeduplicator 请求去重器
 type RequestDeduplicator struct {
