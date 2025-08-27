@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +17,7 @@ import (
 type PredictiveCache struct {
 	mu              sync.RWMutex
 	cache           map[string]*PredictiveCacheEntry
-	patterns        map[string]*RequestPattern
+	patterns        map[string]*PredictiveRequestPattern
 	prefetchQueue   chan PrefetchRequest
 	maxPrefetch     int
 	similarityThreshold float64
@@ -34,8 +33,8 @@ type PredictiveCacheEntry struct {
 	IsPrefetch  bool    // 是否为预取数据
 }
 
-// RequestPattern 请求模式
-type RequestPattern struct {
+// PredictiveRequestPattern 预测请求模式
+type PredictiveRequestPattern struct {
 	BaseRequest     AnthropicRequest
 	Variations      []AnthropicRequest
 	Frequency       int64
@@ -53,7 +52,7 @@ type PrefetchRequest struct {
 
 var predictiveCache = &PredictiveCache{
 	cache:               make(map[string]*PredictiveCacheEntry),
-	patterns:            make(map[string]*RequestPattern),
+	patterns:            make(map[string]*PredictiveRequestPattern),
 	prefetchQueue:       make(chan PrefetchRequest, 100),
 	maxPrefetch:         10,
 	similarityThreshold: 0.8,
@@ -165,7 +164,7 @@ func (pc *PredictiveCache) calculateSimilarity(req1, req2 AnthropicRequest) floa
 }
 
 // calculateContentSimilarity 计算内容相似度
-func (pc *PredictiveCache) calculateContentSimilarity(msgs1, msgs2 []Message) float64 {
+func (pc *PredictiveCache) calculateContentSimilarity(msgs1, msgs2 []AnthropicRequestMessage) float64 {
 	if len(msgs1) == 0 && len(msgs2) == 0 {
 		return 1.0
 	}
@@ -181,7 +180,7 @@ func (pc *PredictiveCache) calculateContentSimilarity(msgs1, msgs2 []Message) fl
 }
 
 // extractTextFromMessages 从消息中提取文本
-func (pc *PredictiveCache) extractTextFromMessages(msgs []Message) string {
+func (pc *PredictiveCache) extractTextFromMessages(msgs []AnthropicRequestMessage) string {
 	var texts []string
 	for _, msg := range msgs {
 		if content := getMessageContent(msg.Content); content != "" {
@@ -245,7 +244,7 @@ func (pc *PredictiveCache) learnPattern(req AnthropicRequest) {
 			pattern.Variations = pattern.Variations[1:]
 		}
 	} else {
-		pc.patterns[patternKey] = &RequestPattern{
+		pc.patterns[patternKey] = &PredictiveRequestPattern{
 			BaseRequest:   req,
 			Variations:    []AnthropicRequest{req},
 			Frequency:     1,
@@ -285,7 +284,7 @@ func (pc *PredictiveCache) predictNextRequests(currentReq AnthropicRequest) {
 }
 
 // calculatePredictionConfidence 计算预测置信度
-func (pc *PredictiveCache) calculatePredictionConfidence(current, predicted AnthropicRequest, pattern *RequestPattern) float64 {
+func (pc *PredictiveCache) calculatePredictionConfidence(current, predicted AnthropicRequest, pattern *PredictiveRequestPattern) float64 {
 	// 基于频率、时间间隔、相似度等因素计算置信度
 	frequencyScore := float64(pattern.Frequency) / 100.0
 	if frequencyScore > 1.0 {
@@ -427,7 +426,7 @@ func (pc *PredictiveCache) analyzeAndOptimizePatterns() {
 func (pc *PredictiveCache) generateKey(req AnthropicRequest) string {
 	data, _ := json.Marshal(struct {
 		Model     string    `json:"model"`
-		Messages  []Message `json:"messages"`
+		Messages  []AnthropicRequestMessage `json:"messages"`
 		MaxTokens int       `json:"max_tokens,omitempty"`
 	}{
 		Model:     req.Model,

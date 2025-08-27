@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -98,7 +99,7 @@ func (tb *TokenBucket) refill() {
 	
 	if elapsed > time.Second {
 		tokensToAdd := int(elapsed.Seconds()) * tb.refillRate
-		tb.tokens = min(tb.capacity, tb.tokens+tokensToAdd)
+		tb.tokens = minRate(tb.capacity, tb.tokens+tokensToAdd)
 		tb.lastRefill = now
 	}
 }
@@ -122,7 +123,7 @@ func (rl *RateLimiter) adaptRateLimit(clientID string, bucket *TokenBucket) {
 	if now.Sub(bucket.lastRequest) > time.Minute {
 		if bucket.refillRate < 20 {
 			bucket.refillRate++
-			bucket.capacity = min(50, bucket.capacity+2)
+			bucket.capacity = minRate(50, bucket.capacity+2)
 		}
 	}
 	
@@ -232,7 +233,7 @@ func (rl *RateLimiter) GetClientInfo(clientID string) map[string]interface{} {
 }
 
 // 辅助函数
-func min(a, b int) int {
+func minRate(a, b int) int {
 	if a < b {
 		return a
 	}

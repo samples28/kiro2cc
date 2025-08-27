@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -12,15 +11,15 @@ import (
 // AdvancedAnalytics 高级分析系统
 type AdvancedAnalytics struct {
 	mu                sync.RWMutex
-	requestPatterns   map[string]*RequestPattern
+	requestPatterns   map[string]*AnalyticsRequestPattern
 	userBehavior      map[string]*UserBehavior
 	costAnalysis      *CostAnalysis
 	performanceMetrics *PerformanceMetrics
 	startTime         time.Time
 }
 
-// RequestPattern 请求模式分析
-type RequestPattern struct {
+// AnalyticsRequestPattern 分析请求模式
+type AnalyticsRequestPattern struct {
 	Pattern     string    `json:"pattern"`
 	Frequency   int64     `json:"frequency"`
 	AvgSize     int       `json:"avg_size"`
@@ -60,7 +59,7 @@ type PerformanceMetrics struct {
 }
 
 var advancedAnalytics = &AdvancedAnalytics{
-	requestPatterns:    make(map[string]*RequestPattern),
+	requestPatterns:    make(map[string]*AnalyticsRequestPattern),
 	userBehavior:       make(map[string]*UserBehavior),
 	costAnalysis:       &CostAnalysis{CostPerRequest: 0.001}, // 假设每个请求成本0.001美元
 	performanceMetrics: &PerformanceMetrics{ResponseTimes: make([]time.Duration, 0, 10000)},
@@ -81,7 +80,7 @@ func (aa *AdvancedAnalytics) RecordRequest(req AnthropicRequest, userID string, 
 		p.LastSeen = time.Now()
 		p.Trend = aa.calculateTrend(p)
 	} else {
-		aa.requestPatterns[pattern] = &RequestPattern{
+		aa.requestPatterns[pattern] = &AnalyticsRequestPattern{
 			Pattern:     pattern,
 			Frequency:   1,
 			AvgSize:     size,
@@ -128,7 +127,7 @@ func (aa *AdvancedAnalytics) generatePattern(req AnthropicRequest) string {
 }
 
 // calculateTrend 计算趋势
-func (aa *AdvancedAnalytics) calculateTrend(p *RequestPattern) string {
+func (aa *AdvancedAnalytics) calculateTrend(p *AnalyticsRequestPattern) string {
 	// 简化的趋势计算
 	if p.Frequency > 10 {
 		return "increasing"
@@ -247,7 +246,7 @@ func (aa *AdvancedAnalytics) GetAnalytics() map[string]interface{} {
 	defer aa.mu.RUnlock()
 
 	// 获取热门请求模式
-	var topPatterns []*RequestPattern
+	var topPatterns []*AnalyticsRequestPattern
 	for _, pattern := range aa.requestPatterns {
 		topPatterns = append(topPatterns, pattern)
 	}

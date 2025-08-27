@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -160,7 +163,7 @@ func (rd *RequestDeduplicator) canMergeWithGroup(req AnthropicRequest, group *Me
 	}
 
 	// 消息数量差异不能太大
-	if abs(len(req.Messages)-len(group.BaseRequest.Messages)) > 2 {
+	if absInt(len(req.Messages)-len(group.BaseRequest.Messages)) > 2 {
 		return false
 	}
 
@@ -247,11 +250,10 @@ func (rd *RequestDeduplicator) levenshteinDistance(s1, s2 string) int {
 			if s1[i-1] != s2[j-1] {
 				cost = 1
 			}
-			matrix[i][j] = min(
-				matrix[i-1][j]+1,      // deletion
-				matrix[i][j-1]+1,      // insertion
-				matrix[i-1][j-1]+cost, // substitution
-			)
+			deletion := matrix[i-1][j] + 1
+			insertion := matrix[i][j-1] + 1
+			substitution := matrix[i-1][j-1] + cost
+			matrix[i][j] = minInt(minInt(deletion, insertion), substitution)
 		}
 	}
 
@@ -482,21 +484,21 @@ func (rd *RequestDeduplicator) GetStats() map[string]interface{} {
 }
 
 // 辅助函数
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
 }
 
-func max(a, b int) int {
+func maxInt(a, b int) int {
 	if a > b {
 		return a
 	}
 	return b
 }
 
-func abs(a int) int {
+func absInt(a int) int {
 	if a < 0 {
 		return -a
 	}

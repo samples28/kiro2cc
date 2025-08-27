@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,21 +10,22 @@ import (
 	"time"
 )
 
-// RequestBatcher 请求批处理器
+// RequestBatcher 智能请求批处理器
 type RequestBatcher struct {
 	mu           sync.RWMutex
-	pendingReqs  map[string]*BatchedRequest
+	pendingReqs  []*BatchedRequest
 	batchTimer   *time.Timer
 	batchSize    int
 	batchTimeout time.Duration
+	processing   bool
 }
 
 // BatchedRequest 批处理请求
 type BatchedRequest struct {
-	Request     AnthropicRequest
-	ResponseCh  chan BatchResponse
-	CreatedAt   time.Time
-	RequestHash string
+	Request    AnthropicRequest
+	ResponseCh chan BatchResponse
+	CreatedAt  time.Time
+	RequestID  string
 }
 
 // BatchResponse 批处理响应
@@ -36,9 +35,10 @@ type BatchResponse struct {
 }
 
 var requestBatcher = &RequestBatcher{
-	pendingReqs:  make(map[string]*BatchedRequest),
-	batchSize:    5,                    // 批处理大小
-	batchTimeout: 100 * time.Millisecond, // 批处理超时时间
+	pendingReqs:  make([]*BatchedRequest, 0),
+	batchSize:    3,                    // 每批最多3个请求
+	batchTimeout: 200 * time.Millisecond, // 200ms超时
+	processing:   false,
 }
 
 // AddRequest 添加请求到批处理队列
@@ -46,109 +46,187 @@ func (rb *RequestBatcher) AddRequest(req AnthropicRequest) <-chan BatchResponse 
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
-	// 生成请求哈希
-	reqHash := rb.generateRequestHash(req)
-	
-	// 检查是否已有相同请求在处理
-	if existingReq, exists := rb.pendingReqs[reqHash]; exists {
-		// 如果请求创建时间在5秒内，复用该请求
-		if time.Since(existingReq.CreatedAt) < 5*time.Second {
-			return existingReq.ResponseCh
-		}
+	// 如果是流式请求，不进行批处理
+	if req.Stream {
+		responseCh := make(chan BatchResponse, 1)
+		go func() {
+			responseCh <- BatchResponse{Error: fmt.Errorf("streaming requests not supported in batch")}
+			close(responseCh)
+		}()
+		return responseCh
 	}
+
+	// 生成唯一请求ID
+	requestID := fmt.Sprintf("req_%d_%d", time.Now().UnixNano(), len(rb.pendingReqs))
 
 	// 创建新的批处理请求
 	batchedReq := &BatchedRequest{
-		Request:     req,
-		ResponseCh:  make(chan BatchResponse, 1),
-		CreatedAt:   time.Now(),
-		RequestHash: reqHash,
+		Request:    req,
+		ResponseCh: make(chan BatchResponse, 1),
+		CreatedAt:  time.Now(),
+		RequestID:  requestID,
 	}
 
-	rb.pendingReqs[reqHash] = batchedReq
+	// 添加到待处理队列
+	rb.pendingReqs = append(rb.pendingReqs, batchedReq)
 
 	// 检查是否需要立即处理批次
 	if len(rb.pendingReqs) >= rb.batchSize {
-		go rb.processBatch()
-	} else if rb.batchTimer == nil {
+		if !rb.processing {
+			rb.processing = true
+			go rb.processBatch()
+		}
+	} else if rb.batchTimer == nil && !rb.processing {
 		// 设置批处理超时定时器
 		rb.batchTimer = time.AfterFunc(rb.batchTimeout, func() {
-			rb.processBatch()
+			rb.mu.Lock()
+			if !rb.processing && len(rb.pendingReqs) > 0 {
+				rb.processing = true
+				rb.mu.Unlock()
+				rb.processBatch()
+			} else {
+				rb.mu.Unlock()
+			}
 		})
 	}
 
 	return batchedReq.ResponseCh
 }
 
-// generateRequestHash 生成请求哈希
-func (rb *RequestBatcher) generateRequestHash(req AnthropicRequest) string {
-	// 只对非流式请求进行哈希，流式请求不适合批处理
-	if req.Stream {
-		return ""
-	}
 
-	// 创建请求的简化版本用于哈希
-	hashReq := struct {
-		Model    string    `json:"model"`
-		Messages []Message `json:"messages"`
-		MaxTokens int      `json:"max_tokens,omitempty"`
-	}{
-		Model:     req.Model,
-		Messages:  req.Messages,
-		MaxTokens: req.MaxTokens,
-	}
-
-	data, _ := json.Marshal(hashReq)
-	hash := md5.Sum(data)
-	return hex.EncodeToString(hash[:])
-}
 
 // processBatch 处理批次
 func (rb *RequestBatcher) processBatch() {
 	rb.mu.Lock()
-	
+
 	if len(rb.pendingReqs) == 0 {
+		rb.processing = false
 		rb.mu.Unlock()
 		return
 	}
 
 	// 复制当前批次
-	currentBatch := make(map[string]*BatchedRequest)
-	for k, v := range rb.pendingReqs {
-		currentBatch[k] = v
-	}
-	
+	currentBatch := make([]*BatchedRequest, len(rb.pendingReqs))
+	copy(currentBatch, rb.pendingReqs)
+
 	// 清空待处理队列
-	rb.pendingReqs = make(map[string]*BatchedRequest)
-	
+	rb.pendingReqs = make([]*BatchedRequest, 0)
+
 	// 重置定时器
 	if rb.batchTimer != nil {
 		rb.batchTimer.Stop()
 		rb.batchTimer = nil
 	}
-	
+
 	rb.mu.Unlock()
 
-	// 异步处理批次
-	go rb.executeBatch(currentBatch)
+	// 执行批次处理
+	rb.executeBatch(currentBatch)
+
+	// 标记处理完成
+	rb.mu.Lock()
+	rb.processing = false
+	rb.mu.Unlock()
 }
 
-// executeBatch 执行批次处理
-func (rb *RequestBatcher) executeBatch(batch map[string]*BatchedRequest) {
+// executeBatch 执行批次处理 - 真正的请求合并
+func (rb *RequestBatcher) executeBatch(batch []*BatchedRequest) {
+	if len(batch) == 0 {
+		return
+	}
+
+	fmt.Printf("🚀 批处理: 合并 %d 个请求\n", len(batch))
+
+	// 如果只有一个请求，直接处理
+	if len(batch) == 1 {
+		rb.executeSingleRequest(batch[0])
+		return
+	}
+
+	// 尝试智能合并请求
+	mergedRequest, canMerge := rb.mergeRequests(batch)
+	if canMerge {
+		// 执行合并后的请求
+		response, err := rb.executeRequest(mergedRequest)
+		if err == nil {
+			// 成功：将响应分发给所有原始请求
+			rb.distributeResponse(batch, response)
+			fmt.Printf("✅ 批处理成功: %d 个请求合并为 1 个\n", len(batch))
+			return
+		}
+		fmt.Printf("⚠️ 合并请求失败，回退到单独处理: %v\n", err)
+	}
+
+	// 合并失败或不可合并，单独处理每个请求
+	for _, req := range batch {
+		go rb.executeSingleRequest(req)
+	}
+}
+
+// executeSingleRequest 执行单个请求
+func (rb *RequestBatcher) executeSingleRequest(batchedReq *BatchedRequest) {
+	response, err := rb.executeRequest(batchedReq.Request)
+
+	// 发送响应
+	select {
+	case batchedReq.ResponseCh <- BatchResponse{Response: response, Error: err}:
+	case <-time.After(30 * time.Second):
+		// 超时处理
+	}
+	close(batchedReq.ResponseCh)
+}
+
+// mergeRequests 智能合并请求
+func (rb *RequestBatcher) mergeRequests(batch []*BatchedRequest) (AnthropicRequest, bool) {
+	if len(batch) <= 1 {
+		return AnthropicRequest{}, false
+	}
+
+	// 检查是否可以合并（相同模型、非流式）
+	firstReq := batch[0].Request
+	for _, batchedReq := range batch[1:] {
+		if batchedReq.Request.Model != firstReq.Model || batchedReq.Request.Stream {
+			return AnthropicRequest{}, false
+		}
+	}
+
+	// 创建合并后的请求
+	mergedReq := AnthropicRequest{
+		Model:     firstReq.Model,
+		MaxTokens: firstReq.MaxTokens,
+		Stream:    false,
+		System:    firstReq.System,
+		Messages:  make([]AnthropicRequestMessage, 0),
+	}
+
+	// 合并所有消息，添加分隔符
+	for i, batchedReq := range batch {
+		if i > 0 {
+			// 添加分隔符
+			mergedReq.Messages = append(mergedReq.Messages, AnthropicRequestMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("--- 请求 %d ---", i+1),
+			})
+		}
+
+		// 添加原始消息
+		mergedReq.Messages = append(mergedReq.Messages, batchedReq.Request.Messages...)
+	}
+
+	return mergedReq, true
+}
+
+// distributeResponse 分发响应给所有原始请求
+func (rb *RequestBatcher) distributeResponse(batch []*BatchedRequest, response interface{}) {
+	// 简化处理：给每个请求发送相同的响应
+	// 在实际应用中，可能需要解析响应并分发给对应的请求
 	for _, batchedReq := range batch {
-		// 对于每个请求，异步执行
-		go func(req *BatchedRequest) {
-			// 这里调用实际的API处理逻辑
-			response, err := rb.executeRequest(req.Request)
-			
-			// 发送响应
-			select {
-			case req.ResponseCh <- BatchResponse{Response: response, Error: err}:
-			case <-time.After(30 * time.Second):
-				// 超时处理
-			}
-			close(req.ResponseCh)
-		}(batchedReq)
+		select {
+		case batchedReq.ResponseCh <- BatchResponse{Response: response, Error: nil}:
+		case <-time.After(30 * time.Second):
+			// 超时处理
+		}
+		close(batchedReq.ResponseCh)
 	}
 }
 

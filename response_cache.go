@@ -106,7 +106,7 @@ func (rc *ResponseCache) generateCacheKey(req AnthropicRequest) string {
 	// 创建缓存键的结构
 	cacheKey := struct {
 		Model     string    `json:"model"`
-		Messages  []Message `json:"messages"`
+		Messages  []AnthropicRequestMessage `json:"messages"`
 		MaxTokens int       `json:"max_tokens,omitempty"`
 	}{
 		Model:     req.Model,

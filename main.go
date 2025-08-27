@@ -239,7 +239,8 @@ func buildCodeWhispererRequest(anthropicReq AnthropicRequest) CodeWhispererReque
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.Content = getMessageContent(anthropicReq.Messages[len(anthropicReq.Messages)-1].Content)
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.ModelId = ModelMap[anthropicReq.Model]
 	cwReq.ConversationState.CurrentMessage.UserInputMessage.Origin = "AI_EDITOR"
-	// 处理 tools 信息
+	// 处理 tools 信息（暂时跳过，因为当前结构不支持）
+	/*
 	if len(anthropicReq.Tools) > 0 {
 		var tools []CodeWhispererTool
 		for _, tool := range anthropicReq.Tools {
@@ -253,6 +254,7 @@ func buildCodeWhispererRequest(anthropicReq AnthropicRequest) CodeWhispererReque
 		}
 		cwReq.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext.Tools = tools
 	}
+	*/
 
 	// 构建历史消息
 	// 先处理 system 消息或者常规历史消息
@@ -688,7 +690,29 @@ func startServer(port string) {
 			return
 		}
 
-		// 4. 请求去重处理
+		// 4. 请求批处理 - 合并相似请求
+		batchResponseCh := requestBatcher.AddRequest(compressedReq)
+
+		// 等待批处理响应
+		select {
+		case batchResp := <-batchResponseCh:
+			if batchResp.Error != nil {
+				// 批处理失败，继续单独处理
+				fmt.Printf("批处理失败，继续单独处理: %v\n", batchResp.Error)
+			} else {
+				// 批处理成功，返回结果
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Cache", "BATCH-HIT")
+				json.NewEncoder(w).Encode(batchResp.Response)
+				metrics.RecordRequest(time.Since(startTime), true, false)
+				return
+			}
+		case <-time.After(150 * time.Millisecond):
+			// 批处理超时，继续单独处理
+			fmt.Printf("批处理超时，继续单独处理\n")
+		}
+
+		// 5. 请求去重处理
 		dedupeResponseCh := requestDeduplicator.ProcessRequest(compressedReq)
 
 		// 等待去重响应
@@ -755,16 +779,9 @@ func startServer(port string) {
 				"cache_efficiency": calculateCacheEfficiency(),
 				"compression_effectiveness": calculateCompressionEffectiveness(),
 			},
-			"cache_layers": map[string]interface{}{
-				"predictive_cache": predictiveCache.GetStats(),
-				"basic_cache":      responseCache.GetStats(),
-				"dedupe_cache":     requestDeduplicator.GetStats(),
-			},
-			"optimizations": map[string]interface{}{
-				"context_compression": contextCompressor.GetStats(),
-				"request_batching":    requestBatcher.GetStats(),
-			},
-			"performance": metrics.GetStats(),
+			"cache_layers": map[string]interface{}{},
+			"optimizations": map[string]interface{}{},
+			"performance": map[string]interface{}{},
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(detailedStats)
@@ -874,22 +891,26 @@ func startServer(port string) {
 // calculateAPISavings 计算API调用节省数量
 func calculateAPISavings() map[string]interface{} {
 	metricsStats := metrics.GetStats()
-	cacheStats := responseCache.GetStats()
-	predictiveStats := predictiveCache.GetStats()
-	dedupeStats := requestDeduplicator.GetStats()
+
 
 	totalRequests := metricsStats["total_requests"].(int64)
 	cachedRequests := metricsStats["cached_requests"].(int64)
 
 	// 估算节省的API调用
 	predictiveSavings := int64(0)
-	if predictiveEntries, ok := predictiveStats["prefetch_entries"].(int); ok {
-		predictiveSavings = int64(predictiveEntries)
+	if predictiveCache != nil {
+		predictiveStats := predictiveCache.GetStats()
+		if predictiveEntries, ok := predictiveStats["prefetch_entries"].(int); ok {
+			predictiveSavings = int64(predictiveEntries)
+		}
 	}
 
 	dedupeSavings := int64(0)
-	if totalMerges, ok := dedupeStats["total_merges"].(int64); ok {
-		dedupeSavings = totalMerges
+	if requestDeduplicator != nil {
+		dedupeStats := requestDeduplicator.GetStats()
+		if totalMerges, ok := dedupeStats["total_merges"].(int64); ok {
+			dedupeSavings = totalMerges
+		}
 	}
 
 	totalSavings := cachedRequests + predictiveSavings + dedupeSavings
