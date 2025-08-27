@@ -548,24 +548,37 @@ func logMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		startTime := time.Now()
 
-		// fmt.Printf("\n=== 收到请求 ===\n")
-		// fmt.Printf("时间: %s\n", startTime.Format("2006-01-02 15:04:05"))
-		// fmt.Printf("请求方法: %s\n", r.Method)
-		// fmt.Printf("请求路径: %s\n", r.URL.Path)
-		// fmt.Printf("客户端IP: %s\n", r.RemoteAddr)
-		// fmt.Printf("请求头:\n")
-		// for name, values := range r.Header {
-		// 	fmt.Printf("  %s: %s\n", name, strings.Join(values, ", "))
-		// }
+		// 创建响应写入器包装器来捕获状态码
+		wrappedWriter := &responseWriter{ResponseWriter: w, statusCode: 200}
 
 		// 调用下一个处理器
-		next(w, r)
+		next(wrappedWriter, r)
 
 		// 计算处理时间
 		duration := time.Since(startTime)
-		fmt.Printf("处理时间: %v\n", duration)
-		fmt.Printf("=== 请求结束 ===\n\n")
+
+		// 记录指标
+		cached := wrappedWriter.Header().Get("X-Cache") == "HIT"
+		if r.URL.Path == "/v1/messages" {
+			metrics.RecordRequest(duration, cached, false)
+			if wrappedWriter.statusCode >= 400 {
+				metrics.RecordError()
+			}
+		}
+
+		fmt.Printf("处理时间: %v, 状态码: %d, 路径: %s\n", duration, wrappedWriter.statusCode, r.URL.Path)
 	}
+}
+
+// responseWriter 包装器用于捕获状态码
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
 // startServer 启动HTTP代理服务器
@@ -582,8 +595,8 @@ func startServer(port string) {
 			return
 		}
 
-		// 获取当前token
-		token, err := getToken()
+		// 获取当前token (使用优化的token管理器)
+		token, err := tokenManager.GetToken()
 		if err != nil {
 			fmt.Printf("错误: 获取token失败: %v\n", err)
 			http.Error(w, fmt.Sprintf("获取token失败: %v", err), http.StatusInternalServerError)
@@ -634,14 +647,134 @@ func startServer(port string) {
 			return
 		}
 
-		// 非流式请求处理
-		handleNonStreamRequest(w, anthropicReq, token.AccessToken)
+		// 非流式请求处理 - 多层优化
+		startTime := time.Now()
+
+		// 1. 上下文压缩
+		compressedReq := contextCompressor.CompressRequest(anthropicReq)
+
+		// 2. 预测性缓存检查
+		if cachedResponse, found, confidence := predictiveCache.Get(compressedReq); found {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Cache", "PREDICTIVE-HIT")
+			w.Header().Set("X-Cache-Confidence", fmt.Sprintf("%.2f", confidence))
+			json.NewEncoder(w).Encode(cachedResponse)
+			metrics.RecordRequest(time.Since(startTime), true, false)
+			return
+		}
+
+		// 3. 传统缓存检查
+		if cachedResponse, found := responseCache.Get(compressedReq); found {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Cache", "HIT")
+			json.NewEncoder(w).Encode(cachedResponse)
+			metrics.RecordRequest(time.Since(startTime), true, false)
+			return
+		}
+
+		// 4. 请求去重处理
+		dedupeResponseCh := requestDeduplicator.ProcessRequest(compressedReq)
+
+		// 等待去重响应
+		select {
+		case dedupeResp := <-dedupeResponseCh:
+			if dedupeResp.Error != nil {
+				http.Error(w, dedupeResp.Error.Error(), http.StatusInternalServerError)
+				metrics.RecordError()
+				return
+			}
+
+			// 设置响应头
+			w.Header().Set("Content-Type", "application/json")
+			if dedupeResp.FromCache {
+				w.Header().Set("X-Cache", "DEDUPE-HIT")
+			} else {
+				w.Header().Set("X-Cache", "MISS")
+			}
+			if dedupeResp.Merged {
+				w.Header().Set("X-Merged", "true")
+			}
+
+			// 缓存响应
+			if !dedupeResp.FromCache {
+				responseCache.Set(compressedReq, dedupeResp.Response)
+				predictiveCache.Set(compressedReq, dedupeResp.Response)
+			}
+
+			w.Write(dedupeResp.Response.([]byte))
+			metrics.RecordRequest(time.Since(startTime), dedupeResp.FromCache, dedupeResp.Merged)
+
+		case <-time.After(45 * time.Second): // 增加超时时间以适应去重处理
+			http.Error(w, "请求超时", http.StatusRequestTimeout)
+			metrics.RecordError()
+		}
 	}))
 
 	// 添加健康检查端点
 	mux.HandleFunc("/health", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
+	}))
+
+	// 添加统计信息端点
+	mux.HandleFunc("/stats", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		stats := map[string]interface{}{
+			"basic_cache":      responseCache.GetStats(),
+			"predictive_cache": predictiveCache.GetStats(),
+			"context_compressor": contextCompressor.GetStats(),
+			"request_deduplicator": requestDeduplicator.GetStats(),
+			"metrics":          metrics.GetStats(),
+			"timestamp":        time.Now().Unix(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(stats)
+	}))
+
+	// 添加详细统计端点
+	mux.HandleFunc("/stats/detailed", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		detailedStats := map[string]interface{}{
+			"optimization_summary": map[string]interface{}{
+				"total_api_calls_saved": calculateAPISavings(),
+				"avg_response_time_improvement": calculateResponseTimeImprovement(),
+				"cache_efficiency": calculateCacheEfficiency(),
+				"compression_effectiveness": calculateCompressionEffectiveness(),
+			},
+			"cache_layers": map[string]interface{}{
+				"predictive_cache": predictiveCache.GetStats(),
+				"basic_cache":      responseCache.GetStats(),
+				"dedupe_cache":     requestDeduplicator.GetStats(),
+			},
+			"optimizations": map[string]interface{}{
+				"context_compression": contextCompressor.GetStats(),
+				"request_batching":    requestBatcher.GetStats(),
+			},
+			"performance": metrics.GetStats(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(detailedStats)
+	}))
+
+	// 添加配置端点
+	mux.HandleFunc("/config", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(GetConfig())
+	}))
+
+	// 添加优化控制端点
+	mux.HandleFunc("/optimize/cleanup", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "只支持POST请求", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// 执行清理
+		contextCompressor.CleanupCache()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "cleanup completed",
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
 	}))
 
 	// 添加404处理
@@ -653,13 +786,110 @@ func startServer(port string) {
 	// 启动服务器
 	fmt.Printf("启动Anthropic API代理服务器，监听端口: %s\n", port)
 	fmt.Printf("可用端点:\n")
-	fmt.Printf("  POST /v1/messages - Anthropic API代理\n")
-	fmt.Printf("  GET  /health      - 健康检查\n")
+	fmt.Printf("  POST /v1/messages     - Anthropic API代理\n")
+	fmt.Printf("  GET  /health          - 健康检查\n")
+	fmt.Printf("  GET  /stats           - 基础统计信息\n")
+	fmt.Printf("  GET  /stats/detailed  - 详细统计信息\n")
+	fmt.Printf("  GET  /config          - 配置信息\n")
+	fmt.Printf("  POST /optimize/cleanup - 清理缓存\n")
 	fmt.Printf("按Ctrl+C停止服务器\n")
 
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		fmt.Printf("启动服务器失败: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// calculateAPISavings 计算API调用节省数量
+func calculateAPISavings() map[string]interface{} {
+	metricsStats := metrics.GetStats()
+	cacheStats := responseCache.GetStats()
+	predictiveStats := predictiveCache.GetStats()
+	dedupeStats := requestDeduplicator.GetStats()
+
+	totalRequests := metricsStats["total_requests"].(int64)
+	cachedRequests := metricsStats["cached_requests"].(int64)
+
+	// 估算节省的API调用
+	predictiveSavings := int64(0)
+	if predictiveEntries, ok := predictiveStats["prefetch_entries"].(int); ok {
+		predictiveSavings = int64(predictiveEntries)
+	}
+
+	dedupeSavings := int64(0)
+	if totalMerges, ok := dedupeStats["total_merges"].(int64); ok {
+		dedupeSavings = totalMerges
+	}
+
+	totalSavings := cachedRequests + predictiveSavings + dedupeSavings
+	savingsRate := 0.0
+	if totalRequests > 0 {
+		savingsRate = float64(totalSavings) / float64(totalRequests) * 100
+	}
+
+	return map[string]interface{}{
+		"total_api_calls_saved": totalSavings,
+		"cache_savings":         cachedRequests,
+		"predictive_savings":    predictiveSavings,
+		"dedupe_savings":        dedupeSavings,
+		"savings_rate_percent":  savingsRate,
+	}
+}
+
+// calculateResponseTimeImprovement 计算响应时间改进
+func calculateResponseTimeImprovement() map[string]interface{} {
+	metricsStats := metrics.GetStats()
+
+	avgResponseTime := metricsStats["avg_response_time_ms"].(int64)
+	cacheHitRate := metricsStats["cache_hit_rate"].(float64)
+
+	// 估算没有缓存时的响应时间
+	estimatedCacheResponseTime := int64(10)
+	estimatedAPIResponseTime := avgResponseTime
+
+	if cacheHitRate > 0 {
+		estimatedAPIResponseTime = int64(float64(avgResponseTime-estimatedCacheResponseTime) / (1 - cacheHitRate/100))
+	}
+
+	improvement := estimatedAPIResponseTime - avgResponseTime
+	improvementPercent := 0.0
+	if estimatedAPIResponseTime > 0 {
+		improvementPercent = float64(improvement) / float64(estimatedAPIResponseTime) * 100
+	}
+
+	return map[string]interface{}{
+		"current_avg_response_time_ms": avgResponseTime,
+		"estimated_without_cache_ms":   estimatedAPIResponseTime,
+		"improvement_ms":               improvement,
+		"improvement_percent":          improvementPercent,
+	}
+}
+
+// calculateCacheEfficiency 计算缓存效率
+func calculateCacheEfficiency() map[string]interface{} {
+	basicStats := responseCache.GetStats()
+	predictiveStats := predictiveCache.GetStats()
+	metricsStats := metrics.GetStats()
+
+	cacheHitRate := metricsStats["cache_hit_rate"].(float64)
+
+	return map[string]interface{}{
+		"overall_cache_hit_rate": cacheHitRate,
+		"basic_cache_size":       basicStats["cache_size"],
+		"predictive_cache_size":  predictiveStats["total_cache_entries"],
+		"learned_patterns":       predictiveStats["learned_patterns"],
+	}
+}
+
+// calculateCompressionEffectiveness 计算压缩效果
+func calculateCompressionEffectiveness() map[string]interface{} {
+	compressionStats := contextCompressor.GetStats()
+
+	return map[string]interface{}{
+		"compression_cache_size":   compressionStats["compression_cache_size"],
+		"total_compressions":       compressionStats["total_compressions"],
+		"avg_compression_ratio":    compressionStats["avg_compression_ratio"],
+		"summary_cache_size":       compressionStats["summary_cache_size"],
 	}
 }
 
@@ -707,8 +937,8 @@ func handleStreamRequest(w http.ResponseWriter, anthropicReq AnthropicRequest, a
 	proxyReq.Header.Set("Content-Type", "application/json")
 	proxyReq.Header.Set("Accept", "text/event-stream")
 
-	// 发送请求
-	client := &http.Client{}
+	// 发送请求 (使用优化的HTTP客户端)
+	client := httpClientManager.GetStreamingClient()
 
 	resp, err := client.Do(proxyReq)
 	if err != nil {
@@ -723,8 +953,9 @@ func handleStreamRequest(w http.ResponseWriter, anthropicReq AnthropicRequest, a
 		sendErrorEvent(w, flusher, "error", fmt.Errorf("状态码: %d", resp.StatusCode))
 
 		if resp.StatusCode == 403 {
-			refreshToken()
-			sendErrorEvent(w, flusher, "error", fmt.Errorf("CodeWhisperer Token 已刷新，请重试"))
+			// 异步刷新token，不阻塞当前请求
+			go tokenManager.refreshTokenAsync()
+			sendErrorEvent(w, flusher, "error", fmt.Errorf("CodeWhisperer Token 已过期，已异步刷新，请重试"))
 		} else {
 			sendErrorEvent(w, flusher, "error", fmt.Errorf("CodeWhisperer Error: %s ", string(body)))
 		}
