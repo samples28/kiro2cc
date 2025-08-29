@@ -9,6 +9,7 @@ import (
 
 	"github.com/bestk/kiro2cc/internal/anthropic"
 	"github.com/bestk/kiro2cc/internal/codewhisperer"
+	"github.com/bestk/kiro2cc/internal/config"
 )
 
 var ModelMap = map[string]string{
@@ -71,8 +72,15 @@ func getMessageContent(content any) string {
 
 // BuildCodeWhispererRequest builds a CodeWhisperer request from an Anthropic request.
 func BuildCodeWhispererRequest(anthropicReq anthropic.Request) codewhisperer.Request {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		// Fallback to default region if config fails to load
+		cfg = &config.Config{Region: "us-east-1"}
+		log.Printf("Failed to load config, falling back to default region: %s", cfg.Region)
+	}
+
 	cwReq := codewhisperer.Request{
-		ProfileArn: "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK",
+		ProfileArn: fmt.Sprintf("arn:aws:codewhisperer:%s:699475941385:profile/EHGA3GRVQMUK", cfg.Region),
 	}
 	cwReq.ConversationState.ChatTriggerType = "MANUAL"
 	cwReq.ConversationState.ConversationId = generateUUID()

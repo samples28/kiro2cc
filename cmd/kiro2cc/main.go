@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 
+	"github.com/bestk/kiro2cc/internal/config"
 	"github.com/bestk/kiro2cc/internal/server"
 	"github.com/bestk/kiro2cc/internal/token"
 	"github.com/spf13/cobra"
@@ -42,8 +43,9 @@ refresh them, and run a local proxy server for the Anthropic API with advanced f
 	}
 
 	var claudeCmd = &cobra.Command{
-		Use:   "claude",
-		Short: "Bypass Claude region restrictions",
+		Use:   "claude [region]",
+		Short: "Bypass Claude region restrictions by setting the AWS region (e.g., us-east-1, eu-west-2)",
+		Args:  cobra.ExactArgs(1),
 		Run:   setClaude,
 	}
 
@@ -106,9 +108,20 @@ func exportEnvVars(cmd *cobra.Command, args []string) {
 }
 
 func setClaude(cmd *cobra.Command, args []string) {
-	// This function needs to be refactored to not exit on error.
-	// For now, leaving it as is.
-	fmt.Println("This feature is not yet fully refactored.")
+	region := args[0]
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logger.Error("Failed to load config", "error", err)
+		os.Exit(1)
+	}
+
+	cfg.Region = region
+	if err := config.SaveConfig(cfg); err != nil {
+		logger.Error("Failed to save config", "error", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Claude region set to: %s\n", region)
 }
 
 func startServer(cmd *cobra.Command, args []string) {

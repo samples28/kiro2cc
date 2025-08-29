@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bestk/kiro2cc/internal/anthropic"
+	"github.com/bestk/kiro2cc/internal/config"
 	"github.com/bestk/kiro2cc/internal/proxy"
 	"github.com/bestk/kiro2cc/internal/token"
 	"github.com/bestk/kiro2cc/parser"
@@ -129,8 +130,16 @@ func (s *Server) handleStreamRequest(w http.ResponseWriter, anthropicReq anthrop
 		return
 	}
 
+	// Load config to get the region
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		s.sendErrorEvent(w, flusher, "Failed to load configuration", err)
+		return
+	}
+
 	// Create request
-	proxyReq, err := http.NewRequest(http.MethodPost, "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse", bytes.NewBuffer(cwReqBody))
+	endpoint := fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", cfg.Region)
+	proxyReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(cwReqBody))
 	if err != nil {
 		s.sendErrorEvent(w, flusher, "Failed to create proxy request", err)
 		return
@@ -179,7 +188,15 @@ func (s *Server) handleNonStreamRequest(w http.ResponseWriter, anthropicReq anth
 		return
 	}
 
-	proxyReq, err := http.NewRequest(http.MethodPost, "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse", bytes.NewBuffer(cwReqBody))
+	// Load config to get the region
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		s.logger.Error("Failed to load configuration", "error", err)
+		http.Error(w, "Failed to load configuration", http.StatusInternalServerError)
+		return
+	}
+	endpoint := fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", cfg.Region)
+	proxyReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(cwReqBody))
 	if err != nil {
 		s.logger.Error("Failed to create proxy request", "error", err)
 		http.Error(w, "Failed to create proxy request", http.StatusInternalServerError)
