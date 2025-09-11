@@ -7,16 +7,16 @@ import (
 
 // Metrics 性能指标收集器
 type Metrics struct {
-	mu                    sync.RWMutex
-	totalRequests         int64
-	cachedRequests        int64
-	batchedRequests       int64
-	tokenRefreshCount     int64
-	avgResponseTime       time.Duration
-	totalResponseTime     time.Duration
-	requestCount          int64
-	errorCount            int64
-	lastResetTime         time.Time
+	mu                sync.RWMutex
+	totalRequests     int64
+	cachedRequests    int64
+	batchedRequests   int64
+	tokenRefreshCount int64
+	avgResponseTime   time.Duration
+	totalResponseTime time.Duration
+	requestCount      int64
+	errorCount        int64
+	lastResetTime     time.Time
 }
 
 var metrics = &Metrics{

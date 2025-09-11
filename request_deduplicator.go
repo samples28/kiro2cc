@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -46,10 +49,10 @@ type MergeableGroup struct {
 
 // DedupeResponse 去重响应
 type DedupeResponse struct {
-	Response interface{}
-	Error    error
+	Response  interface{}
+	Error     error
 	FromCache bool
-	Merged   bool
+	Merged    bool
 }
 
 var requestDeduplicator = &RequestDeduplicator{
@@ -68,7 +71,7 @@ func init() {
 func (rd *RequestDeduplicator) ProcessRequest(req AnthropicRequest) <-chan DedupeResponse {
 	// 生成请求哈希
 	reqHash := rd.generateRequestHash(req)
-	
+
 	rd.mu.Lock()
 	defer rd.mu.Unlock()
 
@@ -124,7 +127,7 @@ func (rd *RequestDeduplicator) ProcessRequest(req AnthropicRequest) <-chan Dedup
 // tryMergeRequest 尝试合并请求
 func (rd *RequestDeduplicator) tryMergeRequest(req AnthropicRequest) *DedupeResponse {
 	mergeKey := rd.generateMergeKey(req)
-	
+
 	if group, exists := rd.mergeableGroups[mergeKey]; exists {
 		// 检查是否可以合并
 		if rd.canMergeWithGroup(req, group) && time.Since(group.LastMerged) < 5*time.Minute {
@@ -132,7 +135,7 @@ func (rd *RequestDeduplicator) tryMergeRequest(req AnthropicRequest) *DedupeResp
 			group.Variations = append(group.Variations, req)
 			group.MergeCount++
 			group.LastMerged = time.Now()
-			
+
 			// 限制变体数量
 			if len(group.Variations) > 10 {
 				group.Variations = group.Variations[1:]
@@ -247,10 +250,9 @@ func (rd *RequestDeduplicator) levenshteinDistance(s1, s2 string) int {
 			if s1[i-1] != s2[j-1] {
 				cost = 1
 			}
-			matrix[i][j] = min(
-				matrix[i-1][j]+1,      // deletion
-				matrix[i][j-1]+1,      // insertion
-				matrix[i-1][j-1]+cost, // substitution
+			matrix[i][j] = minInt(
+				minInt(matrix[i-1][j]+1, matrix[i][j-1]+1), // deletion, insertion
+				matrix[i-1][j-1]+cost,                      // substitution
 			)
 		}
 	}
@@ -262,7 +264,7 @@ func (rd *RequestDeduplicator) levenshteinDistance(s1, s2 string) int {
 func (rd *RequestDeduplicator) executeRequest(activeReq *ActiveRequest) {
 	// 执行实际的API请求
 	response, err := rd.performAPIRequest(activeReq.Request)
-	
+
 	// 创建响应
 	dedupeResp := DedupeResponse{
 		Response:  response,
@@ -356,7 +358,7 @@ func (rd *RequestDeduplicator) updateMergeableGroup(req AnthropicRequest, respon
 	}
 
 	mergeKey := rd.generateMergeKey(req)
-	
+
 	if group, exists := rd.mergeableGroups[mergeKey]; exists {
 		group.ResponseCache = response
 		group.LastMerged = time.Now()
@@ -449,15 +451,15 @@ func (rd *RequestDeduplicator) cleanup() {
 				FromCache: false,
 				Merged:    false,
 			}
-			
+
 			active.ResponseCh <- timeoutResp
 			close(active.ResponseCh)
-			
+
 			for _, subscriberCh := range active.Subscribers {
 				subscriberCh <- timeoutResp
 				close(subscriberCh)
 			}
-			
+
 			delete(rd.activeRequests, hash)
 		}
 	}
@@ -474,20 +476,14 @@ func (rd *RequestDeduplicator) GetStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"active_requests":    len(rd.activeRequests),
-		"recent_requests":    len(rd.recentRequests),
-		"mergeable_groups":   len(rd.mergeableGroups),
-		"total_merges":       totalMerges,
+		"active_requests":  len(rd.activeRequests),
+		"recent_requests":  len(rd.recentRequests),
+		"mergeable_groups": len(rd.mergeableGroups),
+		"total_merges":     totalMerges,
 	}
 }
 
-// 辅助函数
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
+// 使用统一的 minInt 函数
 
 func max(a, b int) int {
 	if a > b {

@@ -10,24 +10,24 @@ import (
 
 // CacheEntry 缓存条目
 type CacheEntry struct {
-	Response  interface{}
-	CreatedAt time.Time
+	Response    interface{}
+	CreatedAt   time.Time
 	AccessCount int64
 }
 
 // ResponseCache 响应缓存
 type ResponseCache struct {
-	mu       sync.RWMutex
-	cache    map[string]*CacheEntry
-	maxSize  int
-	ttl      time.Duration
+	mu           sync.RWMutex
+	cache        map[string]*CacheEntry
+	maxSize      int
+	ttl          time.Duration
 	cleanupTimer *time.Timer
 }
 
 var responseCache = &ResponseCache{
 	cache:   make(map[string]*CacheEntry),
-	maxSize: 1000,                // 最大缓存条目数
-	ttl:     10 * time.Minute,    // 缓存TTL
+	maxSize: 1000,             // 最大缓存条目数
+	ttl:     10 * time.Minute, // 缓存TTL
 }
 
 // init 初始化缓存清理定时器
@@ -105,9 +105,9 @@ func (rc *ResponseCache) generateCacheKey(req AnthropicRequest) string {
 
 	// 创建缓存键的结构
 	cacheKey := struct {
-		Model     string    `json:"model"`
-		Messages  []Message `json:"messages"`
-		MaxTokens int       `json:"max_tokens,omitempty"`
+		Model     string                    `json:"model"`
+		Messages  []AnthropicRequestMessage `json:"messages"`
+		MaxTokens int                       `json:"max_tokens,omitempty"`
 	}{
 		Model:     req.Model,
 		Messages:  req.Messages,
@@ -131,8 +131,8 @@ func (rc *ResponseCache) evictLRU() {
 
 	// 找到最少使用且最旧的条目
 	for key, entry := range rc.cache {
-		if minAccessCount == -1 || entry.AccessCount < minAccessCount || 
-		   (entry.AccessCount == minAccessCount && entry.CreatedAt.Before(oldestTime)) {
+		if minAccessCount == -1 || entry.AccessCount < minAccessCount ||
+			(entry.AccessCount == minAccessCount && entry.CreatedAt.Before(oldestTime)) {
 			oldestKey = key
 			oldestTime = entry.CreatedAt
 			minAccessCount = entry.AccessCount
@@ -181,8 +181,8 @@ func (rc *ResponseCache) GetStats() map[string]interface{} {
 	defer rc.mu.RUnlock()
 
 	return map[string]interface{}{
-		"cache_size": len(rc.cache),
-		"max_size":   rc.maxSize,
+		"cache_size":  len(rc.cache),
+		"max_size":    rc.maxSize,
 		"ttl_minutes": rc.ttl.Minutes(),
 	}
 }

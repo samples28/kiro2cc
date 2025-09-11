@@ -24,7 +24,7 @@ var tokenManager = &TokenManager{}
 // GetToken 获取token，优先从缓存获取
 func (tm *TokenManager) GetToken() (*TokenData, error) {
 	tm.mu.RLock()
-	
+
 	// 检查缓存是否有效（5分钟内的token认为有效）
 	if tm.cachedToken != nil && time.Since(tm.lastUpdate) < 5*time.Minute {
 		defer tm.mu.RUnlock()
@@ -68,7 +68,7 @@ func (tm *TokenManager) loadAndCacheToken() (*TokenData, error) {
 
 	tm.cachedToken = &token
 	tm.lastUpdate = time.Now()
-	
+
 	return &token, nil
 }
 
@@ -91,7 +91,7 @@ func (tm *TokenManager) refreshTokenAsync() {
 	// 更新缓存
 	tm.cachedToken = newToken
 	tm.lastUpdate = time.Now()
-	
+
 	fmt.Println("Token已异步刷新")
 }
 

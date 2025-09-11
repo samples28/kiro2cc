@@ -19,8 +19,8 @@ type Config struct {
 
 	// 缓存配置
 	Cache struct {
-		MaxSize    int           `json:"max_size"`
-		TTL        time.Duration `json:"ttl"`
+		MaxSize         int           `json:"max_size"`
+		TTL             time.Duration `json:"ttl"`
 		CleanupInterval time.Duration `json:"cleanup_interval"`
 	} `json:"cache"`
 
@@ -33,7 +33,7 @@ type Config struct {
 
 	// Token管理配置
 	Token struct {
-		CacheTimeout    time.Duration `json:"cache_timeout"`
+		CacheTimeout     time.Duration `json:"cache_timeout"`
 		RefreshThreshold time.Duration `json:"refresh_threshold"`
 	} `json:"token"`
 

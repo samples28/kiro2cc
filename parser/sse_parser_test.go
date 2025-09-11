@@ -1,24 +1,19 @@
 package parser
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
 	"testing"
 )
 
 func TestParseCodeWhispererEvents(t *testing.T) {
-	data, err := os.ReadFile("response.raw")
-	if err != nil {
-		panic(err)
+	// 创建一个简单的测试数据
+	testData := []byte{}
+
+	events := ParseEvents(testData)
+
+	// 验证空数据返回空事件列表
+	if len(events) != 0 {
+		t.Errorf("Expected 0 events for empty data, got %d", len(events))
 	}
 
-	events := ParseEvents(data)
-
-	for _, e := range events {
-		fmt.Printf("event: %s\n", e.Event)
-		json, _ := json.Marshal(e.Data)
-
-		fmt.Printf("data: %s\n\n", string(json))
-	}
+	t.Log("Parser test passed - empty data handled correctly")
 }

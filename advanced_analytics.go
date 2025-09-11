@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -11,23 +10,15 @@ import (
 
 // AdvancedAnalytics 高级分析系统
 type AdvancedAnalytics struct {
-	mu                sync.RWMutex
-	requestPatterns   map[string]*RequestPattern
-	userBehavior      map[string]*UserBehavior
-	costAnalysis      *CostAnalysis
+	mu                 sync.RWMutex
+	requestPatterns    map[string]*RequestPatternAnalytics
+	userBehavior       map[string]*UserBehavior
+	costAnalysis       *CostAnalysis
 	performanceMetrics *PerformanceMetrics
-	startTime         time.Time
+	startTime          time.Time
 }
 
-// RequestPattern 请求模式分析
-type RequestPattern struct {
-	Pattern     string    `json:"pattern"`
-	Frequency   int64     `json:"frequency"`
-	AvgSize     int       `json:"avg_size"`
-	AvgDuration time.Duration `json:"avg_duration"`
-	LastSeen    time.Time `json:"last_seen"`
-	Trend       string    `json:"trend"` // increasing, decreasing, stable
-}
+// 使用统一的 RequestPatternAnalytics 类型
 
 // UserBehavior 用户行为分析
 type UserBehavior struct {
@@ -50,17 +41,17 @@ type CostAnalysis struct {
 
 // PerformanceMetrics 性能指标
 type PerformanceMetrics struct {
-	AvgResponseTime    time.Duration `json:"avg_response_time"`
-	P95ResponseTime    time.Duration `json:"p95_response_time"`
-	P99ResponseTime    time.Duration `json:"p99_response_time"`
-	ThroughputPerSec   float64       `json:"throughput_per_sec"`
-	ErrorRate          float64       `json:"error_rate"`
-	CacheHitRate       float64       `json:"cache_hit_rate"`
-	ResponseTimes      []time.Duration `json:"-"` // 不导出，用于计算百分位数
+	AvgResponseTime  time.Duration   `json:"avg_response_time"`
+	P95ResponseTime  time.Duration   `json:"p95_response_time"`
+	P99ResponseTime  time.Duration   `json:"p99_response_time"`
+	ThroughputPerSec float64         `json:"throughput_per_sec"`
+	ErrorRate        float64         `json:"error_rate"`
+	CacheHitRate     float64         `json:"cache_hit_rate"`
+	ResponseTimes    []time.Duration `json:"-"` // 不导出，用于计算百分位数
 }
 
 var advancedAnalytics = &AdvancedAnalytics{
-	requestPatterns:    make(map[string]*RequestPattern),
+	requestPatterns:    make(map[string]*RequestPatternAnalytics),
 	userBehavior:       make(map[string]*UserBehavior),
 	costAnalysis:       &CostAnalysis{CostPerRequest: 0.001}, // 假设每个请求成本0.001美元
 	performanceMetrics: &PerformanceMetrics{ResponseTimes: make([]time.Duration, 0, 10000)},
@@ -81,7 +72,7 @@ func (aa *AdvancedAnalytics) RecordRequest(req AnthropicRequest, userID string, 
 		p.LastSeen = time.Now()
 		p.Trend = aa.calculateTrend(p)
 	} else {
-		aa.requestPatterns[pattern] = &RequestPattern{
+		aa.requestPatterns[pattern] = &RequestPatternAnalytics{
 			Pattern:     pattern,
 			Frequency:   1,
 			AvgSize:     size,
@@ -128,7 +119,7 @@ func (aa *AdvancedAnalytics) generatePattern(req AnthropicRequest) string {
 }
 
 // calculateTrend 计算趋势
-func (aa *AdvancedAnalytics) calculateTrend(p *RequestPattern) string {
+func (aa *AdvancedAnalytics) calculateTrend(p *RequestPatternAnalytics) string {
 	// 简化的趋势计算
 	if p.Frequency > 10 {
 		return "increasing"
@@ -180,7 +171,7 @@ func (aa *AdvancedAnalytics) updateCostAnalysis() {
 	if aa.costAnalysis.TotalRequests > 0 {
 		savedRequests := aa.costAnalysis.CachedRequests
 		aa.costAnalysis.EstimatedCostSaved = float64(savedRequests) * aa.costAnalysis.CostPerRequest
-		
+
 		// 计算月度节省（假设当前速率持续一个月）
 		uptime := time.Since(aa.startTime)
 		if uptime > 0 {
@@ -194,22 +185,22 @@ func (aa *AdvancedAnalytics) updateCostAnalysis() {
 // updatePerformanceMetrics 更新性能指标
 func (aa *AdvancedAnalytics) updatePerformanceMetrics(responseTime time.Duration, cached bool) {
 	pm := aa.performanceMetrics
-	
+
 	// 添加响应时间到列表
 	pm.ResponseTimes = append(pm.ResponseTimes, responseTime)
-	
+
 	// 保持最多10000个样本
 	if len(pm.ResponseTimes) > 10000 {
 		pm.ResponseTimes = pm.ResponseTimes[1:]
 	}
-	
+
 	// 计算平均响应时间
 	var total time.Duration
 	for _, rt := range pm.ResponseTimes {
 		total += rt
 	}
 	pm.AvgResponseTime = total / time.Duration(len(pm.ResponseTimes))
-	
+
 	// 计算百分位数
 	if len(pm.ResponseTimes) > 10 {
 		sorted := make([]time.Duration, len(pm.ResponseTimes))
@@ -217,10 +208,10 @@ func (aa *AdvancedAnalytics) updatePerformanceMetrics(responseTime time.Duration
 		sort.Slice(sorted, func(i, j int) bool {
 			return sorted[i] < sorted[j]
 		})
-		
-		p95Index := int(math.Ceil(0.95 * float64(len(sorted)))) - 1
-		p99Index := int(math.Ceil(0.99 * float64(len(sorted)))) - 1
-		
+
+		p95Index := int(math.Ceil(0.95*float64(len(sorted)))) - 1
+		p99Index := int(math.Ceil(0.99*float64(len(sorted)))) - 1
+
 		if p95Index >= 0 && p95Index < len(sorted) {
 			pm.P95ResponseTime = sorted[p95Index]
 		}
@@ -228,13 +219,13 @@ func (aa *AdvancedAnalytics) updatePerformanceMetrics(responseTime time.Duration
 			pm.P99ResponseTime = sorted[p99Index]
 		}
 	}
-	
+
 	// 计算吞吐量
 	uptime := time.Since(aa.startTime)
 	if uptime > 0 {
 		pm.ThroughputPerSec = float64(len(pm.ResponseTimes)) / uptime.Seconds()
 	}
-	
+
 	// 更新缓存命中率
 	if aa.costAnalysis.TotalRequests > 0 {
 		pm.CacheHitRate = float64(aa.costAnalysis.CachedRequests) / float64(aa.costAnalysis.TotalRequests) * 100
@@ -247,7 +238,7 @@ func (aa *AdvancedAnalytics) GetAnalytics() map[string]interface{} {
 	defer aa.mu.RUnlock()
 
 	// 获取热门请求模式
-	var topPatterns []*RequestPattern
+	var topPatterns []*RequestPatternAnalytics
 	for _, pattern := range aa.requestPatterns {
 		topPatterns = append(topPatterns, pattern)
 	}

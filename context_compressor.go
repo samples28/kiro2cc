@@ -12,38 +12,38 @@ import (
 
 // ContextCompressor 上下文压缩器
 type ContextCompressor struct {
-	mu                sync.RWMutex
-	compressionCache  map[string]*CompressedContext
-	summaryCache      map[string]string
-	maxContextLength  int
-	compressionRatio  float64
+	mu               sync.RWMutex
+	compressionCache map[string]*CompressedContext
+	summaryCache     map[string]string
+	maxContextLength int
+	compressionRatio float64
 }
 
 // CompressedContext 压缩的上下文
 type CompressedContext struct {
-	OriginalMessages []Message `json:"original_messages"`
-	CompressedMessages []Message `json:"compressed_messages"`
-	Summary          string    `json:"summary"`
-	CompressionRatio float64   `json:"compression_ratio"`
-	CreatedAt        time.Time `json:"created_at"`
-	UsageCount       int64     `json:"usage_count"`
+	OriginalMessages   []AnthropicRequestMessage `json:"original_messages"`
+	CompressedMessages []AnthropicRequestMessage `json:"compressed_messages"`
+	Summary            string                    `json:"summary"`
+	CompressionRatio   float64                   `json:"compression_ratio"`
+	CreatedAt          time.Time                 `json:"created_at"`
+	UsageCount         int64                     `json:"usage_count"`
 }
 
 // MessageImportance 消息重要性评分
 type MessageImportance struct {
-	Index      int     `json:"index"`
-	Score      float64 `json:"score"`
-	Reason     string  `json:"reason"`
-	IsSystem   bool    `json:"is_system"`
-	IsRecent   bool    `json:"is_recent"`
-	HasKeywords bool   `json:"has_keywords"`
+	Index       int     `json:"index"`
+	Score       float64 `json:"score"`
+	Reason      string  `json:"reason"`
+	IsSystem    bool    `json:"is_system"`
+	IsRecent    bool    `json:"is_recent"`
+	HasKeywords bool    `json:"has_keywords"`
 }
 
 var contextCompressor = &ContextCompressor{
 	compressionCache: make(map[string]*CompressedContext),
 	summaryCache:     make(map[string]string),
-	maxContextLength: 4000,  // 最大上下文长度
-	compressionRatio: 0.6,   // 目标压缩比例
+	maxContextLength: 4000, // 最大上下文长度
+	compressionRatio: 0.6,  // 目标压缩比例
 }
 
 // CompressRequest 压缩请求上下文
@@ -59,12 +59,12 @@ func (cc *ContextCompressor) CompressRequest(req AnthropicRequest) AnthropicRequ
 
 	// 生成缓存键
 	cacheKey := cc.generateCompressionKey(req.Messages)
-	
+
 	cc.mu.RLock()
 	if compressed, exists := cc.compressionCache[cacheKey]; exists {
 		cc.mu.RUnlock()
 		compressed.UsageCount++
-		
+
 		// 创建新请求
 		newReq := req
 		newReq.Messages = compressed.CompressedMessages
@@ -74,7 +74,7 @@ func (cc *ContextCompressor) CompressRequest(req AnthropicRequest) AnthropicRequ
 
 	// 执行压缩
 	compressedMessages := cc.performCompression(req.Messages)
-	
+
 	// 缓存结果
 	cc.mu.Lock()
 	cc.compressionCache[cacheKey] = &CompressedContext{
@@ -93,14 +93,14 @@ func (cc *ContextCompressor) CompressRequest(req AnthropicRequest) AnthropicRequ
 }
 
 // performCompression 执行压缩
-func (cc *ContextCompressor) performCompression(messages []Message) []Message {
+func (cc *ContextCompressor) performCompression(messages []AnthropicRequestMessage) []AnthropicRequestMessage {
 	if len(messages) <= 2 {
 		return messages
 	}
 
 	// 计算消息重要性
 	importance := cc.calculateMessageImportance(messages)
-	
+
 	// 按重要性排序
 	sort.Slice(importance, func(i, j int) bool {
 		return importance[i].Score > importance[j].Score
@@ -117,9 +117,9 @@ func (cc *ContextCompressor) performCompression(messages []Message) []Message {
 }
 
 // calculateMessageImportance 计算消息重要性
-func (cc *ContextCompressor) calculateMessageImportance(messages []Message) []MessageImportance {
+func (cc *ContextCompressor) calculateMessageImportance(messages []AnthropicRequestMessage) []MessageImportance {
 	importance := make([]MessageImportance, len(messages))
-	
+
 	for i, msg := range messages {
 		score := 0.0
 		reasons := []string{}
@@ -195,7 +195,7 @@ func (cc *ContextCompressor) hasImportantKeywords(content string) bool {
 }
 
 // selectImportantMessages 选择重要消息
-func (cc *ContextCompressor) selectImportantMessages(messages []Message, importance []MessageImportance, targetLength int) []int {
+func (cc *ContextCompressor) selectImportantMessages(messages []AnthropicRequestMessage, importance []MessageImportance, targetLength int) []int {
 	selected := make(map[int]bool)
 	currentLength := 0
 
@@ -219,7 +219,7 @@ func (cc *ContextCompressor) selectImportantMessages(messages []Message, importa
 }
 
 // ensureEssentialMessages 确保保留必要消息
-func (cc *ContextCompressor) ensureEssentialMessages(messages []Message, selectedIndices []int) []Message {
+func (cc *ContextCompressor) ensureEssentialMessages(messages []AnthropicRequestMessage, selectedIndices []int) []AnthropicRequestMessage {
 	selected := make(map[int]bool)
 	for _, idx := range selectedIndices {
 		selected[idx] = true
@@ -239,7 +239,7 @@ func (cc *ContextCompressor) ensureEssentialMessages(messages []Message, selecte
 	}
 
 	// 构建最终消息列表
-	var finalMessages []Message
+	var finalMessages []AnthropicRequestMessage
 	var lastIncluded = -1
 
 	for i, msg := range messages {
@@ -248,7 +248,7 @@ func (cc *ContextCompressor) ensureEssentialMessages(messages []Message, selecte
 			if i > lastIncluded+1 {
 				summary := cc.createSummary(messages[lastIncluded+1 : i])
 				if summary != "" {
-					finalMessages = append(finalMessages, Message{
+					finalMessages = append(finalMessages, AnthropicRequestMessage{
 						Role:    "system",
 						Content: fmt.Sprintf("[摘要: %s]", summary),
 					})
@@ -263,14 +263,14 @@ func (cc *ContextCompressor) ensureEssentialMessages(messages []Message, selecte
 }
 
 // createSummary 创建消息摘要
-func (cc *ContextCompressor) createSummary(messages []Message) string {
+func (cc *ContextCompressor) createSummary(messages []AnthropicRequestMessage) string {
 	if len(messages) == 0 {
 		return ""
 	}
 
 	// 生成摘要键
 	summaryKey := cc.generateSummaryKey(messages)
-	
+
 	cc.mu.RLock()
 	if summary, exists := cc.summaryCache[summaryKey]; exists {
 		cc.mu.RUnlock()
@@ -280,7 +280,7 @@ func (cc *ContextCompressor) createSummary(messages []Message) string {
 
 	// 创建简单摘要
 	summary := cc.generateSimpleSummary(messages)
-	
+
 	// 缓存摘要
 	cc.mu.Lock()
 	cc.summaryCache[summaryKey] = summary
@@ -290,7 +290,7 @@ func (cc *ContextCompressor) createSummary(messages []Message) string {
 }
 
 // generateSimpleSummary 生成简单摘要
-func (cc *ContextCompressor) generateSimpleSummary(messages []Message) string {
+func (cc *ContextCompressor) generateSimpleSummary(messages []AnthropicRequestMessage) string {
 	if len(messages) == 0 {
 		return ""
 	}
@@ -301,7 +301,7 @@ func (cc *ContextCompressor) generateSimpleSummary(messages []Message) string {
 	for _, msg := range messages {
 		content := getMessageContent(msg.Content)
 		totalLength += len(content)
-		
+
 		// 提取关键词
 		words := strings.Fields(strings.ToLower(content))
 		for _, word := range words {
@@ -346,7 +346,7 @@ func (cc *ContextCompressor) isImportantWord(word string) bool {
 }
 
 // calculateTotalLength 计算总长度
-func (cc *ContextCompressor) calculateTotalLength(messages []Message) int {
+func (cc *ContextCompressor) calculateTotalLength(messages []AnthropicRequestMessage) int {
 	total := 0
 	for _, msg := range messages {
 		total += len(getMessageContent(msg.Content))
@@ -355,13 +355,13 @@ func (cc *ContextCompressor) calculateTotalLength(messages []Message) int {
 }
 
 // generateCompressionKey 生成压缩缓存键
-func (cc *ContextCompressor) generateCompressionKey(messages []Message) string {
+func (cc *ContextCompressor) generateCompressionKey(messages []AnthropicRequestMessage) string {
 	data, _ := json.Marshal(messages)
 	return fmt.Sprintf("compress_%x", md5.Sum(data))
 }
 
 // generateSummaryKey 生成摘要缓存键
-func (cc *ContextCompressor) generateSummaryKey(messages []Message) string {
+func (cc *ContextCompressor) generateSummaryKey(messages []AnthropicRequestMessage) string {
 	data, _ := json.Marshal(messages)
 	return fmt.Sprintf("summary_%x", md5.Sum(data))
 }

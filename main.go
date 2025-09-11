@@ -735,12 +735,12 @@ func startServer(port string) {
 	// 添加统计信息端点
 	mux.HandleFunc("/stats", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		stats := map[string]interface{}{
-			"basic_cache":      responseCache.GetStats(),
-			"predictive_cache": predictiveCache.GetStats(),
-			"context_compressor": contextCompressor.GetStats(),
+			"basic_cache":          responseCache.GetStats(),
+			"predictive_cache":     predictiveCache.GetStats(),
+			"context_compressor":   contextCompressor.GetStats(),
 			"request_deduplicator": requestDeduplicator.GetStats(),
-			"metrics":          metrics.GetStats(),
-			"timestamp":        time.Now().Unix(),
+			"metrics":              metrics.GetStats(),
+			"timestamp":            time.Now().Unix(),
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(stats)
@@ -750,10 +750,10 @@ func startServer(port string) {
 	mux.HandleFunc("/stats/detailed", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		detailedStats := map[string]interface{}{
 			"optimization_summary": map[string]interface{}{
-				"total_api_calls_saved": calculateAPISavings(),
+				"total_api_calls_saved":         calculateAPISavings(),
 				"avg_response_time_improvement": calculateResponseTimeImprovement(),
-				"cache_efficiency": calculateCacheEfficiency(),
-				"compression_effectiveness": calculateCompressionEffectiveness(),
+				"cache_efficiency":              calculateCacheEfficiency(),
+				"compression_effectiveness":     calculateCompressionEffectiveness(),
 			},
 			"cache_layers": map[string]interface{}{
 				"predictive_cache": predictiveCache.GetStats(),
@@ -793,7 +793,7 @@ func startServer(port string) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"status": "cleanup completed",
+			"status":    "cleanup completed",
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
 	}))
@@ -809,7 +809,7 @@ func startServer(port string) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"recommendations": advancedAnalytics.GetRecommendations(),
-			"timestamp": time.Now().Unix(),
+			"timestamp":       time.Now().Unix(),
 		})
 	}))
 
@@ -823,7 +823,7 @@ func startServer(port string) {
 	mux.HandleFunc("/circuit-breaker/status", logMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"stats": circuitBreaker.GetStats(),
+			"stats":  circuitBreaker.GetStats(),
 			"health": circuitBreaker.GetHealthStatus(),
 		})
 	}))
@@ -838,7 +838,7 @@ func startServer(port string) {
 		circuitBreaker.Reset()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"status": "circuit breaker reset",
+			"status":    "circuit breaker reset",
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
 	}))
@@ -874,7 +874,6 @@ func startServer(port string) {
 // calculateAPISavings 计算API调用节省数量
 func calculateAPISavings() map[string]interface{} {
 	metricsStats := metrics.GetStats()
-	cacheStats := responseCache.GetStats()
 	predictiveStats := predictiveCache.GetStats()
 	dedupeStats := requestDeduplicator.GetStats()
 
@@ -957,10 +956,10 @@ func calculateCompressionEffectiveness() map[string]interface{} {
 	compressionStats := contextCompressor.GetStats()
 
 	return map[string]interface{}{
-		"compression_cache_size":   compressionStats["compression_cache_size"],
-		"total_compressions":       compressionStats["total_compressions"],
-		"avg_compression_ratio":    compressionStats["avg_compression_ratio"],
-		"summary_cache_size":       compressionStats["summary_cache_size"],
+		"compression_cache_size": compressionStats["compression_cache_size"],
+		"total_compressions":     compressionStats["total_compressions"],
+		"avg_compression_ratio":  compressionStats["avg_compression_ratio"],
+		"summary_cache_size":     compressionStats["summary_cache_size"],
 	}
 }
 
@@ -1244,7 +1243,7 @@ func handleNonStreamRequest(w http.ResponseWriter, anthropicReq AnthropicRequest
 			"text": context,
 		})
 	}
-	
+
 	// 检查是否是错误响应
 	if strings.Contains(string(cwRespBody), "Improperly formed request.") {
 		fmt.Printf("错误: CodeWhisperer返回格式错误: %s\n", respBodyStr)

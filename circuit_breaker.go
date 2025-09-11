@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -17,25 +18,25 @@ const (
 
 // CircuitBreaker 熔断器
 type CircuitBreaker struct {
-	mu                sync.RWMutex
-	state             CircuitBreakerState
-	failureCount      int64
-	successCount      int64
-	lastFailureTime   time.Time
-	lastSuccessTime   time.Time
-	
+	mu              sync.RWMutex
+	state           CircuitBreakerState
+	failureCount    int64
+	successCount    int64
+	lastFailureTime time.Time
+	lastSuccessTime time.Time
+
 	// 配置参数
-	maxFailures       int64         // 最大失败次数
-	timeout           time.Duration // 熔断超时时间
-	halfOpenMaxCalls  int64         // 半开状态最大调用次数
-	halfOpenSuccessThreshold int64  // 半开状态成功阈值
-	
+	maxFailures              int64         // 最大失败次数
+	timeout                  time.Duration // 熔断超时时间
+	halfOpenMaxCalls         int64         // 半开状态最大调用次数
+	halfOpenSuccessThreshold int64         // 半开状态成功阈值
+
 	// 统计信息
-	totalCalls        int64
-	totalFailures     int64
-	totalSuccesses    int64
-	stateChanges      int64
-	lastStateChange   time.Time
+	totalCalls      int64
+	totalFailures   int64
+	totalSuccesses  int64
+	stateChanges    int64
+	lastStateChange time.Time
 }
 
 var circuitBreaker = &CircuitBreaker{
@@ -73,7 +74,7 @@ func (cb *CircuitBreaker) Call(fn func() error) error {
 // callInClosedState 在关闭状态下执行调用
 func (cb *CircuitBreaker) callInClosedState(fn func() error) error {
 	err := fn()
-	
+
 	if err != nil {
 		cb.onFailure()
 		if cb.failureCount >= cb.maxFailures {
@@ -81,7 +82,7 @@ func (cb *CircuitBreaker) callInClosedState(fn func() error) error {
 		}
 		return err
 	}
-	
+
 	cb.onSuccess()
 	return nil
 }
@@ -93,7 +94,7 @@ func (cb *CircuitBreaker) callInOpenState(fn func() error) error {
 		cb.setState(StateHalfOpen)
 		return cb.callInHalfOpenState(fn)
 	}
-	
+
 	return ErrCircuitBreakerOpen
 }
 
@@ -110,22 +111,22 @@ func (cb *CircuitBreaker) callInHalfOpenState(fn func() error) error {
 		cb.successCount = 0
 		cb.failureCount = 0
 	}
-	
+
 	err := fn()
-	
+
 	if err != nil {
 		cb.onFailure()
 		cb.setState(StateOpen)
 		return err
 	}
-	
+
 	cb.onSuccess()
-	
+
 	// 检查是否可以关闭熔断器
 	if cb.successCount >= cb.halfOpenSuccessThreshold {
 		cb.setState(StateClosed)
 	}
-	
+
 	return nil
 }
 
@@ -134,7 +135,7 @@ func (cb *CircuitBreaker) onSuccess() {
 	cb.successCount++
 	cb.totalSuccesses++
 	cb.lastSuccessTime = time.Now()
-	
+
 	// 在关闭状态下，成功调用会重置失败计数
 	if cb.state == StateClosed {
 		cb.failureCount = 0
@@ -154,7 +155,7 @@ func (cb *CircuitBreaker) setState(state CircuitBreakerState) {
 		cb.state = state
 		cb.stateChanges++
 		cb.lastStateChange = time.Now()
-		
+
 		// 状态变化时重置相关计数器
 		if state == StateClosed {
 			cb.failureCount = 0
@@ -194,20 +195,20 @@ func (cb *CircuitBreaker) GetStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"state":                    stateStr,
-		"total_calls":              cb.totalCalls,
-		"total_successes":          cb.totalSuccesses,
-		"total_failures":           cb.totalFailures,
-		"success_rate":             successRate,
-		"current_failure_count":    cb.failureCount,
-		"current_success_count":    cb.successCount,
-		"state_changes":            cb.stateChanges,
-		"last_state_change":        cb.lastStateChange.Unix(),
-		"last_failure_time":        cb.lastFailureTime.Unix(),
-		"last_success_time":        cb.lastSuccessTime.Unix(),
-		"max_failures":             cb.maxFailures,
-		"timeout_seconds":          cb.timeout.Seconds(),
-		"half_open_max_calls":      cb.halfOpenMaxCalls,
+		"state":                       stateStr,
+		"total_calls":                 cb.totalCalls,
+		"total_successes":             cb.totalSuccesses,
+		"total_failures":              cb.totalFailures,
+		"success_rate":                successRate,
+		"current_failure_count":       cb.failureCount,
+		"current_success_count":       cb.successCount,
+		"state_changes":               cb.stateChanges,
+		"last_state_change":           cb.lastStateChange.Unix(),
+		"last_failure_time":           cb.lastFailureTime.Unix(),
+		"last_success_time":           cb.lastSuccessTime.Unix(),
+		"max_failures":                cb.maxFailures,
+		"timeout_seconds":             cb.timeout.Seconds(),
+		"half_open_max_calls":         cb.halfOpenMaxCalls,
 		"half_open_success_threshold": cb.halfOpenSuccessThreshold,
 	}
 }
@@ -298,7 +299,7 @@ func CircuitBreakerMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			// 创建一个响应写入器来捕获状态码
 			rw := &responseWriter{ResponseWriter: w, statusCode: 200}
 			next(rw, r)
-			
+
 			// 如果状态码表示错误，返回错误
 			if rw.statusCode >= 500 {
 				return errors.New("server error")

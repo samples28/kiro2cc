@@ -37,7 +37,7 @@ type BatchResponse struct {
 
 var requestBatcher = &RequestBatcher{
 	pendingReqs:  make(map[string]*BatchedRequest),
-	batchSize:    5,                    // 批处理大小
+	batchSize:    5,                      // 批处理大小
 	batchTimeout: 100 * time.Millisecond, // 批处理超时时间
 }
 
@@ -48,7 +48,7 @@ func (rb *RequestBatcher) AddRequest(req AnthropicRequest) <-chan BatchResponse 
 
 	// 生成请求哈希
 	reqHash := rb.generateRequestHash(req)
-	
+
 	// 检查是否已有相同请求在处理
 	if existingReq, exists := rb.pendingReqs[reqHash]; exists {
 		// 如果请求创建时间在5秒内，复用该请求
@@ -89,9 +89,9 @@ func (rb *RequestBatcher) generateRequestHash(req AnthropicRequest) string {
 
 	// 创建请求的简化版本用于哈希
 	hashReq := struct {
-		Model    string    `json:"model"`
-		Messages []Message `json:"messages"`
-		MaxTokens int      `json:"max_tokens,omitempty"`
+		Model     string                    `json:"model"`
+		Messages  []AnthropicRequestMessage `json:"messages"`
+		MaxTokens int                       `json:"max_tokens,omitempty"`
 	}{
 		Model:     req.Model,
 		Messages:  req.Messages,
@@ -106,7 +106,7 @@ func (rb *RequestBatcher) generateRequestHash(req AnthropicRequest) string {
 // processBatch 处理批次
 func (rb *RequestBatcher) processBatch() {
 	rb.mu.Lock()
-	
+
 	if len(rb.pendingReqs) == 0 {
 		rb.mu.Unlock()
 		return
@@ -117,16 +117,16 @@ func (rb *RequestBatcher) processBatch() {
 	for k, v := range rb.pendingReqs {
 		currentBatch[k] = v
 	}
-	
+
 	// 清空待处理队列
 	rb.pendingReqs = make(map[string]*BatchedRequest)
-	
+
 	// 重置定时器
 	if rb.batchTimer != nil {
 		rb.batchTimer.Stop()
 		rb.batchTimer = nil
 	}
-	
+
 	rb.mu.Unlock()
 
 	// 异步处理批次
@@ -140,7 +140,7 @@ func (rb *RequestBatcher) executeBatch(batch map[string]*BatchedRequest) {
 		go func(req *BatchedRequest) {
 			// 这里调用实际的API处理逻辑
 			response, err := rb.executeRequest(req.Request)
-			
+
 			// 发送响应
 			select {
 			case req.ResponseCh <- BatchResponse{Response: response, Error: err}:
@@ -162,7 +162,7 @@ func (rb *RequestBatcher) executeRequest(req AnthropicRequest) (interface{}, err
 
 	// 构建CodeWhisperer请求
 	cwReq := buildCodeWhispererRequest(req)
-	
+
 	// 序列化请求体
 	cwReqBody, err := json.Marshal(cwReq)
 	if err != nil {
@@ -208,4 +208,16 @@ func (rb *RequestBatcher) executeRequest(req AnthropicRequest) (interface{}, err
 	}
 
 	return respBody, nil
+}
+
+// GetStats 获取批处理统计信息
+func (rb *RequestBatcher) GetStats() map[string]interface{} {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+
+	return map[string]interface{}{
+		"pending_requests": len(rb.pendingReqs),
+		"batch_size":       rb.batchSize,
+		"batch_timeout_ms": rb.batchTimeout.Milliseconds(),
+	}
 }

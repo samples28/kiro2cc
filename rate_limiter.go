@@ -2,25 +2,26 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 )
 
 // RateLimiter 智能速率限制器
 type RateLimiter struct {
-	mu              sync.RWMutex
-	buckets         map[string]*TokenBucket
-	globalBucket    *TokenBucket
-	adaptiveMode    bool
+	mu                sync.RWMutex
+	buckets           map[string]*TokenBucket
+	globalBucket      *TokenBucket
+	adaptiveMode      bool
 	maxRequestsPerSec int
-	burstSize       int
+	burstSize         int
 }
 
 // TokenBucket 令牌桶
 type TokenBucket struct {
 	capacity     int
 	tokens       int
-	refillRate   int           // 每秒补充的令牌数
+	refillRate   int // 每秒补充的令牌数
 	lastRefill   time.Time
 	requestCount int64
 	lastRequest  time.Time
@@ -83,7 +84,7 @@ func (rl *RateLimiter) AllowRequest(clientID string) (bool, time.Duration) {
 // consume 消费一个令牌
 func (tb *TokenBucket) consume() bool {
 	tb.refill()
-	
+
 	if tb.tokens > 0 {
 		tb.tokens--
 		return true
@@ -95,10 +96,10 @@ func (tb *TokenBucket) consume() bool {
 func (tb *TokenBucket) refill() {
 	now := time.Now()
 	elapsed := now.Sub(tb.lastRefill)
-	
+
 	if elapsed > time.Second {
 		tokensToAdd := int(elapsed.Seconds()) * tb.refillRate
-		tb.tokens = min(tb.capacity, tb.tokens+tokensToAdd)
+		tb.tokens = minInt(tb.capacity, tb.tokens+tokensToAdd)
 		tb.lastRefill = now
 	}
 }
@@ -108,7 +109,7 @@ func (tb *TokenBucket) timeToRefill() time.Duration {
 	if tb.refillRate == 0 {
 		return time.Hour // 如果没有补充速率，返回很长时间
 	}
-	
+
 	tokensNeeded := 1
 	secondsToWait := float64(tokensNeeded) / float64(tb.refillRate)
 	return time.Duration(secondsToWait * float64(time.Second))
@@ -117,15 +118,15 @@ func (tb *TokenBucket) timeToRefill() time.Duration {
 // adaptRateLimit 自适应调整速率限制
 func (rl *RateLimiter) adaptRateLimit(clientID string, bucket *TokenBucket) {
 	now := time.Now()
-	
+
 	// 如果客户端在过去1分钟内没有请求，增加其限制
 	if now.Sub(bucket.lastRequest) > time.Minute {
 		if bucket.refillRate < 20 {
 			bucket.refillRate++
-			bucket.capacity = min(50, bucket.capacity+2)
+			bucket.capacity = minInt(50, bucket.capacity+2)
 		}
 	}
-	
+
 	// 如果客户端请求频率很高，但表现良好，可以适当增加限制
 	if bucket.requestCount > 100 {
 		avgRequestsPerMinute := float64(bucket.requestCount) / time.Since(bucket.lastRefill).Minutes()
@@ -148,24 +149,24 @@ func (rl *RateLimiter) GetStats() map[string]interface{} {
 	for clientID, bucket := range rl.buckets {
 		totalRequests += bucket.requestCount
 		clientStats[clientID] = map[string]interface{}{
-			"request_count": bucket.requestCount,
+			"request_count":  bucket.requestCount,
 			"current_tokens": bucket.tokens,
-			"refill_rate": bucket.refillRate,
-			"capacity": bucket.capacity,
-			"last_request": bucket.lastRequest.Unix(),
+			"refill_rate":    bucket.refillRate,
+			"capacity":       bucket.capacity,
+			"last_request":   bucket.lastRequest.Unix(),
 		}
 	}
 
 	return map[string]interface{}{
-		"total_clients": totalClients,
+		"total_clients":  totalClients,
 		"total_requests": totalRequests,
 		"global_bucket": map[string]interface{}{
 			"current_tokens": rl.globalBucket.tokens,
-			"capacity": rl.globalBucket.capacity,
-			"refill_rate": rl.globalBucket.refillRate,
+			"capacity":       rl.globalBucket.capacity,
+			"refill_rate":    rl.globalBucket.refillRate,
 		},
 		"adaptive_mode": rl.adaptiveMode,
-		"client_stats": clientStats,
+		"client_stats":  clientStats,
 	}
 }
 
@@ -221,23 +222,17 @@ func (rl *RateLimiter) GetClientInfo(clientID string) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"exists": true,
-		"request_count": bucket.requestCount,
-		"current_tokens": bucket.tokens,
-		"refill_rate": bucket.refillRate,
-		"capacity": bucket.capacity,
-		"last_request": bucket.lastRequest.Unix(),
+		"exists":                  true,
+		"request_count":           bucket.requestCount,
+		"current_tokens":          bucket.tokens,
+		"refill_rate":             bucket.refillRate,
+		"capacity":                bucket.capacity,
+		"last_request":            bucket.lastRequest.Unix(),
 		"time_since_last_request": time.Since(bucket.lastRequest).Seconds(),
 	}
 }
 
-// 辅助函数
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
+// 使用统一的 minInt 函数
 
 // RateLimitMiddleware 速率限制中间件
 func RateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -254,7 +249,7 @@ func RateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", rateLimiter.maxRequestsPerSec))
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(waitTime).Unix()))
-			
+
 			http.Error(w, fmt.Sprintf("Rate limit exceeded. Try again in %.1f seconds", waitTime.Seconds()), http.StatusTooManyRequests)
 			return
 		}

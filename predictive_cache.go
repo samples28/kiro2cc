@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,11 +15,11 @@ import (
 
 // PredictiveCache 预测性缓存
 type PredictiveCache struct {
-	mu              sync.RWMutex
-	cache           map[string]*PredictiveCacheEntry
-	patterns        map[string]*RequestPattern
-	prefetchQueue   chan PrefetchRequest
-	maxPrefetch     int
+	mu                  sync.RWMutex
+	cache               map[string]*PredictiveCacheEntry
+	patterns            map[string]*RequestPatternCache
+	prefetchQueue       chan PrefetchRequest
+	maxPrefetch         int
 	similarityThreshold float64
 }
 
@@ -34,15 +33,7 @@ type PredictiveCacheEntry struct {
 	IsPrefetch  bool    // 是否为预取数据
 }
 
-// RequestPattern 请求模式
-type RequestPattern struct {
-	BaseRequest     AnthropicRequest
-	Variations      []AnthropicRequest
-	Frequency       int64
-	LastSeen        time.Time
-	NextPredicted   time.Time
-	SuccessRate     float64
-}
+// 使用统一的 RequestPatternCache 类型
 
 // PrefetchRequest 预取请求
 type PrefetchRequest struct {
@@ -53,7 +44,7 @@ type PrefetchRequest struct {
 
 var predictiveCache = &PredictiveCache{
 	cache:               make(map[string]*PredictiveCacheEntry),
-	patterns:            make(map[string]*RequestPattern),
+	patterns:            make(map[string]*RequestPatternCache),
 	prefetchQueue:       make(chan PrefetchRequest, 100),
 	maxPrefetch:         10,
 	similarityThreshold: 0.8,
@@ -68,7 +59,7 @@ func init() {
 // Get 获取缓存，支持模糊匹配
 func (pc *PredictiveCache) Get(req AnthropicRequest) (interface{}, bool, float64) {
 	key := pc.generateKey(req)
-	
+
 	pc.mu.RLock()
 	defer pc.mu.RUnlock()
 
@@ -93,7 +84,7 @@ func (pc *PredictiveCache) Get(req AnthropicRequest) (interface{}, bool, float64
 // Set 设置缓存并学习模式
 func (pc *PredictiveCache) Set(req AnthropicRequest, response interface{}) {
 	key := pc.generateKey(req)
-	
+
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
@@ -108,7 +99,7 @@ func (pc *PredictiveCache) Set(req AnthropicRequest, response interface{}) {
 
 	// 学习请求模式
 	pc.learnPattern(req)
-	
+
 	// 触发预测
 	go pc.predictNextRequests(req)
 }
@@ -165,7 +156,7 @@ func (pc *PredictiveCache) calculateSimilarity(req1, req2 AnthropicRequest) floa
 }
 
 // calculateContentSimilarity 计算内容相似度
-func (pc *PredictiveCache) calculateContentSimilarity(msgs1, msgs2 []Message) float64 {
+func (pc *PredictiveCache) calculateContentSimilarity(msgs1, msgs2 []AnthropicRequestMessage) float64 {
 	if len(msgs1) == 0 && len(msgs2) == 0 {
 		return 1.0
 	}
@@ -181,7 +172,7 @@ func (pc *PredictiveCache) calculateContentSimilarity(msgs1, msgs2 []Message) fl
 }
 
 // extractTextFromMessages 从消息中提取文本
-func (pc *PredictiveCache) extractTextFromMessages(msgs []Message) string {
+func (pc *PredictiveCache) extractTextFromMessages(msgs []AnthropicRequestMessage) string {
 	var texts []string
 	for _, msg := range msgs {
 		if content := getMessageContent(msg.Content); content != "" {
@@ -234,18 +225,18 @@ func (pc *PredictiveCache) calculateTextSimilarity(text1, text2 string) float64 
 // learnPattern 学习请求模式
 func (pc *PredictiveCache) learnPattern(req AnthropicRequest) {
 	patternKey := pc.generatePatternKey(req)
-	
+
 	if pattern, exists := pc.patterns[patternKey]; exists {
 		pattern.Frequency++
 		pattern.LastSeen = time.Now()
 		pattern.Variations = append(pattern.Variations, req)
-		
+
 		// 限制变体数量
 		if len(pattern.Variations) > 10 {
 			pattern.Variations = pattern.Variations[1:]
 		}
 	} else {
-		pc.patterns[patternKey] = &RequestPattern{
+		pc.patterns[patternKey] = &RequestPatternCache{
 			BaseRequest:   req,
 			Variations:    []AnthropicRequest{req},
 			Frequency:     1,
@@ -285,7 +276,7 @@ func (pc *PredictiveCache) predictNextRequests(currentReq AnthropicRequest) {
 }
 
 // calculatePredictionConfidence 计算预测置信度
-func (pc *PredictiveCache) calculatePredictionConfidence(current, predicted AnthropicRequest, pattern *RequestPattern) float64 {
+func (pc *PredictiveCache) calculatePredictionConfidence(current, predicted AnthropicRequest, pattern *RequestPatternCache) float64 {
 	// 基于频率、时间间隔、相似度等因素计算置信度
 	frequencyScore := float64(pattern.Frequency) / 100.0
 	if frequencyScore > 1.0 {
@@ -305,7 +296,7 @@ func (pc *PredictiveCache) calculatePredictionConfidence(current, predicted Anth
 // prefetchWorker 预取工作器
 func (pc *PredictiveCache) prefetchWorker() {
 	activePrefetches := 0
-	
+
 	for prefetchReq := range pc.prefetchQueue {
 		if activePrefetches >= pc.maxPrefetch {
 			continue
@@ -319,7 +310,7 @@ func (pc *PredictiveCache) prefetchWorker() {
 		activePrefetches++
 		go func(req PrefetchRequest) {
 			defer func() { activePrefetches-- }()
-			
+
 			// 执行预取
 			response, err := pc.executePrefetch(req.Request)
 			if err == nil {
@@ -379,7 +370,7 @@ func (pc *PredictiveCache) executePrefetch(req AnthropicRequest) (interface{}, e
 // setPrefetchCache 设置预取缓存
 func (pc *PredictiveCache) setPrefetchCache(req AnthropicRequest, response interface{}, confidence float64) {
 	key := pc.generateKey(req)
-	
+
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
@@ -426,15 +417,15 @@ func (pc *PredictiveCache) analyzeAndOptimizePatterns() {
 // generateKey 生成缓存键
 func (pc *PredictiveCache) generateKey(req AnthropicRequest) string {
 	data, _ := json.Marshal(struct {
-		Model     string    `json:"model"`
-		Messages  []Message `json:"messages"`
-		MaxTokens int       `json:"max_tokens,omitempty"`
+		Model     string                    `json:"model"`
+		Messages  []AnthropicRequestMessage `json:"messages"`
+		MaxTokens int                       `json:"max_tokens,omitempty"`
 	}{
 		Model:     req.Model,
 		Messages:  req.Messages,
 		MaxTokens: req.MaxTokens,
 	})
-	
+
 	hash := md5.Sum(data)
 	return hex.EncodeToString(hash[:])
 }
@@ -490,7 +481,7 @@ func (pc *PredictiveCache) GetStats() map[string]interface{} {
 
 	prefetchCount := 0
 	totalConfidence := 0.0
-	
+
 	for _, entry := range pc.cache {
 		if entry.IsPrefetch {
 			prefetchCount++
@@ -504,10 +495,10 @@ func (pc *PredictiveCache) GetStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"total_cache_entries":    len(pc.cache),
-		"prefetch_entries":       prefetchCount,
-		"learned_patterns":       len(pc.patterns),
+		"total_cache_entries":     len(pc.cache),
+		"prefetch_entries":        prefetchCount,
+		"learned_patterns":        len(pc.patterns),
 		"avg_prefetch_confidence": avgConfidence,
-		"prefetch_queue_size":    len(pc.prefetchQueue),
+		"prefetch_queue_size":     len(pc.prefetchQueue),
 	}
 }
